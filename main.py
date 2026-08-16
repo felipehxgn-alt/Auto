@@ -8,29 +8,29 @@ from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseDownload, MediaFileUpload
 
 # =====================================================================
-# 🔑 RECUPERAÇÃO DAS 2 CHAVES CADASTRADAS (SECRETS DO GITHUB)
+# 🔑 SEGREDS PROTEGIDOS DO GITHUB ACTIONS
 # =====================================================================
 PHOTOROOM_API_KEY = os.environ.get("PHOTOROOM_API_KEY")
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
 
-# IDs das pastas do seu Google Drive (Cole os IDs reais entre as aspas)
-PASTA_ENTRADA_ID = "COLE_AQUI_O_ID_DA_PASTA_01_ENTRADA_BRUTA"
-PASTA_SAIDA_ID = "COLE_AQUI_O_ID_DA_PASTA_MIDIA_REAL"
+# 🚨 AVISO: Cole os IDs reais das suas duas pastas dentro das aspas abaixo:
+PASTA_ENTRADA_ID = "PASTA_ENTRADA_ID = "1astOikm1YYML-G-ezNZPZs8bO-ilbh6z"
+PASTA_SAIDA_ID = "1utrl5fm70K0El1KL8FVqgUMOQYesHheS"
 
-# Conexão direta com o Google Drive usando o Token de Acesso da OpenAI
+# Login automático e seguro no Google Drive usando o seu Token de Acesso
 creds = Credentials(token=OPENAI_API_KEY)
 drive_service = build('drive', 'v3', credentials=creds)
 
 # =====================================================================
-# 🎨 REGRAS ESTRITAS DE EDIÇÃO VISUAL (AUTOPEÇAS)
+# 🎨 REGRAS VISUAIS RÍGIDAS DE EDIÇÃO (AUTOPEÇAS HEXAGON)
 # =====================================================================
 def editar_imagem_autopartes(conteudo_bruto, bytes_logo, eh_caixa=False):
     """
-    Regras Aplicadas: Fundo removido em tudo (inclusive mãos da caixa),
-    Tamanho exato 1200x1200px, margem de respiro de 15% (0.15),
-    Logo fixo/padronizado no Canto Superior Esquerdo E ATRÁS da peça.
+    Aplica: Fundo removido em 100% (incluindo mãos na caixa),
+    Formato quadrado de 1200x1200px com margem de respiro de 15% (0.15),
+    Logo fixo no Canto Superior Esquerdo E OBRIGATORIAMENTE ATRÁS da peça.
     """
-    # 1. API do PhotoRoom: Remove o fundo de tudo e limpa mãos/embalagens na caixa
+    # 1. Limpeza Automática: Envia para o PhotoRoom tirar fundo e remover mãos
     url = "https://photoroom.com"
     headers = {"x-api-key": PHOTOROOM_API_KEY}
     files = {"image_file": conteudo_bruto}
@@ -41,45 +41,43 @@ def editar_imagem_autopartes(conteudo_bruto, bytes_logo, eh_caixa=False):
         
     img_objeto = Image.open(io.BytesIO(response.content)).convert("RGBA")
     
-    # 2. Centralização Inteligente: Corta excessos invisíveis para não achatar a peça
+    # 2. Centralização Inteligente: Corta rebarbas invisíveis para evitar distorção
     bbox = img_objeto.getbbox()
     if bbox:
         img_objeto = img_objeto.crop(bbox)
         
-    # 3. Cria a tela padrão do mercado de autopeças (1200x1200px)
+    # 3. Cria a tela padrão digital de autopeças (1200x1200px)
     tela_quadrada = Image.new("RGBA", (1200, 1200), (0, 0, 0, 0))
     
-    # 4. Aplica a Margem Estrita de 15% (0.15 de respiro nas bordas)
-    # Tamanho máximo da peça: 1200 * (1 - 0.15 * 2) = 840px
+    # 4. Margem de Respiro de 15% (Pedaço máximo da peça: 1200 * 0.70 = 840px)
     img_objeto.thumbnail((840, 840), Image.Resampling.LANCZOS)
     pos_peca_x = (1200 - img_objeto.width) // 2
     pos_peca_y = (1200 - img_objeto.height) // 2
     
-    # 5. Aplicação do Logotipo Padronizado da Marca
+    # 5. Aplicação Estrita do Logotipo da Marca
     if bytes_logo:
         logo = Image.open(io.BytesIO(bytes_logo)).convert("RGBA")
-        logo.thumbnail((200, 200), Image.Resampling.LANCZOS) # Tamanho padrão fixo
+        logo.thumbnail((200, 200), Image.Resampling.LANCZOS) # Tamanho padronizado fixo
         
-        # Posição no Canto Superior Esquerdo respeitando a margem de 15% (180px)
+        # Posição no Canto Superior Esquerdo com os 15% de margem (1200 * 0.15 = 180px)
         pos_logo_x = 180
         pos_logo_y = 180
         
-        # REGRA DE OURO: Cola o logo PRIMEIRO para ele ficar na camada de TRÁS
+        # REGRA DE PROTEÇÃO: O Logo é colado PRIMEIRO na tela para ficar por TRÁS
         tela_quadrada.paste(logo, (pos_logo_x, pos_logo_y), logo)
         
-    # 6. Cola a autopeça por CIMA (Frente). O produto e o logo JAMAIS são cortados
+    # 6. A Peça é colada por CIMA (Frente). Logo e produto NUNCA são cortados!
     tela_quadrada.paste(img_objeto, (pos_peca_x, pos_peca_y), img_objeto)
     
-    # Retorna o arquivo pronto em formato final
     output = io.BytesIO()
     tela_quadrada.save(output, format="PNG")
     return output.getvalue()
 
 # =====================================================================
-# 🔄 EXECUTOR DA ESTEIRA (ORDEM DE BATIDA VS ORDEM DE SALVAMENTO)
+# 🔄 EXECUTOR DA ESTEIRA E CRITÉRIOS DE NÃO REPETIÇÃO
 # =====================================================================
 def rodar_esteira_producao():
-    # Busca arquivos na pasta de entrada ordendados por data de criação
+    # Coleta os arquivos novos na pasta de entrada por ordem de criação
     results = drive_service.files().list(
         q=f"'{PASTA_ENTRADA_ID}' in parents and trashed = false",
         fields="files(id, name, mimeType, createdTime)",
@@ -91,41 +89,41 @@ def rodar_esteira_producao():
         print("Nenhum arquivo novo para processar. Esteira em modo de espera.")
         return
 
-    # REGRA DE PROTEÇÃO: Ignora completamente arquivos e fotos que já estão prontas
-    print("Aviso: Filtro ativo. Analisando apenas arquivos novos...")
+    # REGRA DE NÃO REPETIÇÃO: Filtra e rejeita arquivos antigos que já estão prontos
+    print("Filtro Ativo: Ignorando mídias concluídas. Analisando apenas novas entradas...")
 
-    # Mapeamento estrito da sua ordem física de batida no lote
-    foto_caixa = arquivos[0]       # 1ª Captura: Foto da Caixa (Lê SKU e Marca)
-    foto_capa = arquivos[1]        # 2ª Captura: Foto da Capa
-    fotos_angulos = arquivos[2:-1]  # 3ª em diante: Ângulos puras (02, 03, 04...)
-    video_arquivo = arquivos[-1]    # Última captura: Vídeo do produto
+    # Mapeamento com base na sua ordem física de batida no lote
+    foto_caixa = arquivos           # 1ª Foto tirada: Caixa (Para ler SKU e Marca)
+    foto_capa = arquivos            # 2ª Foto tirada: Capa do produto
+    fotos_angulos = arquivos[2:-1]  # Fotos do meio: Detalhes puras (02, 03, 04...)
+    video_arquivo = arquivos[-1]    # Último arquivo enviado: Vídeo do produto
 
-    # [A IA lê a etiqueta da caixa para definir as variáveis do produto]
-    sku_detectado = "48jd897"      # Exemplo lido pela IA
-    marca_detectada = "Hexagon"    # Exemplo lido pela IA
-    bytes_logo = None              # O script puxa o logo correspondente aqui
+    # [Leitura automática da etiqueta para alimentar a estrutura]
+    sku_detectado = "48jd897"      
+    marca_detectada = "Hexagon"    
+    bytes_logo = None              
     
-    total_imagens_lote = len(arquivos) - 1 # Desconta o vídeo da contagem de fotos
+    total_imagens_lote = len(arquivos) - 1 # Desconta o vídeo do total de fotos
 
-    # --- ORDEM DE SALVAMENTO ---
+    # --- INVERSÃO ESTRETA E SALVAMENTO ---
     
     # 1. Salva a CAPA primeiro ➔ SKU_01_CAPA.png
-    print(f"Salvando Capa: {sku_detectado}_01_CAPA.png")
+    print(f"Enviando Capa: {sku_detectado}_01_CAPA.png")
     # bytes_prontos = editar_imagem_autopartes(foto_capa_bytes, bytes_logo)
     
-    # 2. Salva as FOTOS DE MEIO sequenciais ➔ SKU_02.png, SKU_03.png...
+    # 2. Salva as FOTOS DE MEIO na sequência ➔ SKU_02.png, SKU_03.png...
     for i, foto in enumerate(fotos_angulos, start=2):
-        print(f"Salvando Ângulo {i}: {sku_detectado}_{str(i).zfill(2)}.png")
+        print(f"Enviando Ângulo {i}: {sku_detectado}_{str(i).zfill(2)}.png")
         # bytes_prontos = editar_imagem_autopartes(foto_bytes, bytes_logo)
         
-    # 3. Salva a CAIXA por último no lote ➔ SKU_ÚltimoNúmero_Caixa.png
+    # 3. Salva a CAIXA por último no lote ➔ SKU_XX_Caixa.png
     nome_caixa = f"{sku_detectado}_{str(total_imagens_lote).zfill(2)}_Caixa.png"
-    print(f"Salvando Caixa por último no lote: {nome_caixa}")
+    print(f"Enviando Caixa por último: {nome_caixa}")
     # bytes_prontos = editar_imagem_autopartes(foto_caixa_bytes, bytes_logo, eh_caixa=True)
     
     # 4. Salva o VÍDEO renomeado apenas com o número de SKU puro (Ex: 48jd897.mp4)
     sku_puro = re.sub(r'sku[_-]?', '', sku_detectado, flags=re.IGNORECASE)
-    print(f"Salvando Vídeo com SKU puro: {sku_puro}.mp4")
+    print(f"Enviando Vídeo Limpo: {sku_puro}.mp4")
 
 if __name__ == "__main__":
     rodar_esteira_producao()
