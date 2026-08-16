@@ -14,7 +14,7 @@ PHOTOROOM_API_KEY = os.environ.get("PHOTOROOM_API_KEY")
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
 
 # 🚨 AVISO: Cole os IDs reais das suas duas pastas dentro das aspas abaixo:
-PASTA_ENTRADA_ID = "PASTA_ENTRADA_ID = "1astOikm1YYML-G-ezNZPZs8bO-ilbh6z"
+PASTA_ENTRADA_ID = "1astOikm1YYML-G-ezNZPZs8bO-ilbh6z"
 PASTA_SAIDA_ID = "1utrl5fm70K0El1KL8FVqgUMOQYesHheS"
 
 # Login automático e seguro no Google Drive usando o seu Token de Acesso
