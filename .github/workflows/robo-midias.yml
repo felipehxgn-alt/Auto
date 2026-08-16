@@ -28,4 +28,4 @@ jobs:
           LOGO_FOLDER_ID: ${{ secrets.LOGO_FOLDER_ID }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           PHOTOROOM_API_KEY: ${{ secrets.PHOTOROOM_API_KEY }}
-        run: python Main
+        run: python main.py
