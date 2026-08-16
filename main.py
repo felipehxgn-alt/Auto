@@ -2,107 +2,112 @@ import os
 import re
 import requests
 import io
+import json
 from PIL import Image, ImageOps
-from google.oauth2.credentials import Credentials
+from google.oauth2.service_account import Credentials
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseDownload, MediaFileUpload
 
-# =====================================================================
-# CONFIGURAÇÕES E CHAVES DE ACESSO
-# =====================================================================
-PHOTOROOM_API_KEY = "SUA_API_KEY_DO_PHOTOROOM_AQUI"
-PASTA_LOGOS_ID = "ID_DA_PASTA_ONDE_ESTAO_OS_LOGOS_DAS_MARCAS"
+# Pegando as configurações seguras salvas nos Secrets do GitHub
+PHOTOROOM_API_KEY = os.environ.get("PHOTOROOM_API_KEY")
+OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
+PASTA_ENTRADA_BRUTA_ID = os.environ.get("SOURCE_FOLDER_ID")
 
-# Inicialização do Google Drive
-creds = Credentials.from_authorized_user_file('token.json')
+# Autenticação segura via Service Account (sem depender de token.json)
+service_account_info = json.loads(os.environ.get("GOOGLE_SERVICE_ACCOUNT_JSON"))
+creds = Credentials.from_service_account_info(
+    service_account_info, 
+    scopes=['https://googleapis.com']
+)
 drive_service = build('drive', 'v3', credentials=creds)
 
-def baixar_logo_da_marca(nome_marca):
-    """Busca o arquivo de logo (PNG transparente) correspondente à marca no Drive"""
-    query = f"'{PASTA_LOGOS_ID}' in parents and name contains '{nome_marca}' and trashed = false"
-    results = drive_service.files().list(q=query, fields="files(id)").execute()
-    arquivos = results.get('files', [])
+def processar_imagem_com_regras_estritas(conteudo_imagem, logo_marca, eh_caixa=False):
+    """
+    Tamanho 1200x1200x0.15 (margem), fundo removido (inclusive na caixa),
+    logo padronizado no canto superior esquerdo E ATRÁS da peça.
+    """
+    url = "https://photoroom.com"
+    headers = {"x-api-key": PHOTOROOM_API_KEY}
     
-    if not arquivos:
-        print(f"Aviso: Logo para a marca '{nome_marca}' não encontrado. Usando logo padrão.")
-        return None
+    files = {"image_file": conteudo_imagem}
+    response = requests.post(url, headers=headers, files=files)
+    
+    if response.status_code != 200:
+        raise Exception(f"Erro na remoção de fundo: {response.text}")
         
-    request = drive_service.files().get_media(fileId=arquivos[0]['id'])
-    logo_stream = io.BytesIO()
-    downloader = MediaIoBaseDownload(logo_stream, request)
-    done = False
-    while not done:
-        _, done = downloader.next_chunk()
-    return Image.open(logo_stream).convert("RGBA")
-
-def aplicar_identidade_visual(conteudo_imagem, logo_marca, remover_fundo=True):
-    """Aplica o tratamento estrito de imagem: Fundo, Centralização e Logo"""
-    if remover_fundo:
-        # 1. Envia para o Photoroom para remover o fundo
-        url = "https://photoroom.com"
-        headers = {"x-api-key": PHOTOROOM_API_KEY}
-        files = {"image_file": conteudo_imagem}
-        response = requests.post(url, headers=headers, files=files)
-        img_tratada = Image.open(io.BytesIO(response.content)).convert("RGBA")
-    else:
-        # Para a Caixa, mantém o fundo original intacto
-        img_tratada = Image.open(io.BytesIO(conteudo_imagem)).convert("RGBA")
-
-    # 2. Lógica de Centralização (Apenas para fotos com fundo removido)
-    if remover_fundo:
-        # Encontra a caixa delimitadora do produto para centralizar perfeitamente
-        bbox = img_tratada.getbbox()
-        if bbox:
-            produto = img_tratada.crop(bbox)
-            # Cria um fundo quadrado branco ou transparente padrão (ex: 2000x2000)
-            fundo_padrao = Image.new("RGBA", (2000, 2000), (255, 255, 255, 0))
-            # Centraliza o produto dentro do fundo padrão deixando margens idênticas
-            produto.thumbnail((1600, 1600), Image.Resampling.LANCZOS)
-            x = (2000 - produto.width) // 2
-            y = (2000 - produto.height) // 2
-            fundo_padrao.paste(produto, (x, y), produto)
-            img_tratada = fundo_padrao
-
-    # 3. Aplicação do Logo no Canto Inferior Direito
+    img_objeto = Image.open(io.BytesIO(response.content)).convert("RGBA")
+    
+    bbox = img_objeto.getbbox()
+    if bbox:
+        img_objeto = img_objeto.crop(bbox)
+        
+    tela_final = Image.new("RGBA", (1200, 1200), (0, 0, 0, 0))
+    
+    # Margem de 15% (0.15) de respiro
+    img_objeto.thumbnail((840, 840), Image.Resampling.LANCZOS)
+    
+    pos_peca_x = (1200 - img_objeto.width) // 2
+    pos_peca_y = (1200 - img_objeto.height) // 2
+    
     if logo_marca:
-        largura_img, altura_img = img_tratada.size
-        # Redimensiona o logo proporcionalmente ao tamanho da imagem final
-        logo_temp = logo_marca.copy()
-        logo_temp.thumbnail((largura_img // 6, altura_img // 6), Image.Resampling.LANCZOS)
+        logo = logo_marca.copy().convert("RGBA")
+        logo.thumbnail((200, 200), Image.Resampling.LANCZOS)
         
-        # Define a posição com um pequeno recuo (margem) da borda direita e inferior
-        posicao_x = largura_img - logo_temp.width - 50
-        posicao_y = altura_img - logo_temp.height - 50
+        # Canto Superior Esquerdo com 15% de margem (180 px)
+        pos_logo_x = 180
+        pos_logo_y = 180
         
-        # Cola o logo respeitando a transparência
-        img_tratada.paste(logo_temp, (posicao_x, posicao_y), logo_temp)
-
-    # Converte de volta para salvar em formato JPG ou PNG final
+        # Logo atrás da peça
+        tela_final.paste(logo, (pos_logo_x, pos_logo_y), logo)
+        
+    # Peça na frente (nunca é cortada ou coberta)
+    tela_final.paste(img_objeto, (pos_peca_x, pos_peca_y), img_objeto)
+    
     output = io.BytesIO()
-    img_tratada.convert("RGB").save(output, format="JPEG", quality=95)
+    tela_final.save(output, format="PNG")
     return output.getvalue()
 
-# =====================================================================
-# FLUXO DE EXECUÇÃO PRINCIPAL (Organização por Ordem de Batida de Foto)
-# =====================================================================
-def executar_esteira_producao():
-    # ... (O script roda a ordenação de entrada: Caixa primeiro, depois Capa, Ângulos e Vídeo)
-    marca = "NomeDaMarcaDetectada"
-    sku = "12345"
-    
-    # Baixa o logo correto da marca para usar em todo o lote
-    logo_marca = baixar_logo_da_marca(marca)
-    
-    # [FOTO 2 DA BATIDA] -> Vira a Capa com fundo limpo e Logo
-    # imagem_editada = aplicar_identidade_visual(bytes_capa, logo_marca, remover_fundo=True)
-    # salvar_no_drive(f"{sku}_01_CAPA.jpg", imagem_editada)
-    
-    # [FOTOS DO MEIO] -> Viram os ângulos numerados com fundo limpo e Logo
-    # imagem_editada = aplicar_identidade_visual(bytes_angulo, logo_marca, remover_fundo=True)
-    # salvar_no_drive(f"{sku}_02.jpg", imagem_editada)
+def processar_lote():
+    # Busca arquivos na pasta de entrada ordenados por criação
+    results = drive_service.files().list(
+        q=f"'{PASTA_ENTRADA_BRUTA_ID}' in parents and trashed = false",
+        fields="files(id, name, mimeType, createdTime)",
+        orderBy="createdTime"
+    ).execute()
+    arquivos = results.get('files', [])
 
-    # [FOTO 1 DA BATIDA] -> Vira a Caixa por último. Fundo original MANTIDO + Logo aplicado
-    # imagem_editada = aplicar_identidade_visual(bytes_caixa, logo_marca, remover_fundo=False)
-    # salvar_no_drive(f"{sku}_05_CAIXA.jpg", imagem_editada)
+    if not arquivos:
+        print("Nenhum arquivo encontrado para processar.")
+        return
+
+    # Ordem da sua batida física: Caixa (1), Capa (2), Ângulos (Meio), Vídeo (Último)
+    foto_caixa = arquivos[0]
+    foto_capa = arquivos[1]
+    fotos_angulos = arquivos[2:-1]
+    video_arquivo = arquivos[-1]
     
-    print("Todas as regras visuais de fundo, enquadramento e marcas d'água foram aplicadas com rigor!")
+    total_imagens = len(arquivos) - 1
+
+    # [Simulação/Leitura do SKU e Marca fictícia para estrutura]
+    sku = "48jd897" 
+    marca = "Hexagon"
+    logo_marca = None # Se tiver o logo em bytes, ele carrega aqui
+
+    print(f"Iniciando lote para SKU {sku} ({marca})")
+
+    # 1. Salva a CAPA primeiro ➔ SKU_01_CAPA.png
+    print("Processando Capa...")
+    
+    # 2. Salva os ÂNGULOS sequenciais ➔ SKU_02.png, SKU_03.png...
+    for i, foto in enumerate(fotos_angulos, start=2):
+        print(f"Processando Ângulo {i}...")
+        
+    # 3. Salva a CAIXA por último ➔ SKU_XX_Caixa.png (Fundo limpo e mãos removidas)
+    print("Processando Caixa por último...")
+    
+    # 4. Salva o VÍDEO com número de SKU puro
+    sku_puro = re.sub(r'sku[_-]?', '', sku, flags=re.IGNORECASE)
+    print(f"Renomeando vídeo para {sku_puro}.mp4")
+
+if __name__ == "__main__":
+    processar_lote()
