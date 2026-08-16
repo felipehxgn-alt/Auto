@@ -18,14 +18,13 @@ jobs:
           python-version: '3.11'
 
       - name: Install dependencies
-        run: pip install -r requirements.txt
+        run: |
+          pip install google-auth-oauthlib google-api-python-client requests Pillow
 
       - name: Run script
         env:
           GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
           SOURCE_FOLDER_ID: ${{ secrets.SOURCE_FOLDER_ID }}
-          DEST_ROOT_FOLDER_ID: ${{ secrets.DEST_ROOT_FOLDER_ID }}
-          LOGO_FOLDER_ID: ${{ secrets.LOGO_FOLDER_ID }}
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           PHOTOROOM_API_KEY: ${{ secrets.PHOTOROOM_API_KEY }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
         run: python main.py
