@@ -1,0 +1,2 @@
+# Auto
+Automatização de fotos
