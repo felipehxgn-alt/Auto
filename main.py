@@ -44,7 +44,10 @@ fica reservado pra quando o recurso Gerada_IA (fundo por IA) for
 implementado no futuro.
 
 Variaveis opcionais (tem default):
-  DROPBOX_SOURCE_PATH   (default: /01_ENTRADA_BRUTA)
+  DROPBOX_SOURCE_PATH   (default: /01_ENTRADA_BRUTA - raiz de trabalho,
+                          nunca recebe arquivo solto diretamente)
+  DROPBOX_INBOX_PATH    (default: /01_ENTRADA_BRUTA/A_PROCESSAR - AQUI que
+                          o usuario salva as fotos/video novos do dia)
   DROPBOX_DEST_ROOT     (default: /MIDIA_FINAL)
   DROPBOX_LOGOS_PATH    (default: /LOGOS)
 
@@ -121,6 +124,10 @@ OPENAI_API_KEY = os.environ["OPENAI_API_KEY"]
 PHOTOROOM_API_KEY = os.environ.get("PHOTOROOM_API_KEY")  # nao usado pra remover fundo (isso agora e rembg, gratis); fica reservado pro futuro recurso Gerada_IA
 
 DROPBOX_SOURCE_PATH = os.environ.get("DROPBOX_SOURCE_PATH", "/01_ENTRADA_BRUTA")
+# pasta onde o usuario efetivamente salva as fotos/video novos do dia -
+# fica DENTRO de 01_ENTRADA_BRUTA, como irma de _PROCESSADOS e _REVISAR,
+# assim a raiz de 01_ENTRADA_BRUTA nunca fica com arquivo solto
+DROPBOX_INBOX_PATH = os.environ.get("DROPBOX_INBOX_PATH", f"{DROPBOX_SOURCE_PATH}/A_PROCESSAR")
 DROPBOX_DEST_ROOT = os.environ.get("DROPBOX_DEST_ROOT", "/MIDIA_FINAL")
 DROPBOX_LOGOS_PATH = os.environ.get("DROPBOX_LOGOS_PATH", "/LOGOS")
 
@@ -504,7 +511,7 @@ def processar_lote(lote):
 # MAIN
 # ============================================================
 def main():
-    arquivos = dbx_listar_pasta(DROPBOX_SOURCE_PATH)
+    arquivos = dbx_listar_pasta(DROPBOX_INBOX_PATH)
     arquivos = [
         f for f in arquivos
         if "/_processados/" not in f["path_lower"] and "/_revisar/" not in f["path_lower"]
