@@ -44,12 +44,16 @@ fica reservado pra quando o recurso Gerada_IA (fundo por IA) for
 implementado no futuro.
 
 Variaveis opcionais (tem default):
-  DROPBOX_SOURCE_PATH   (default: /01_ENTRADA_BRUTA - raiz de trabalho,
-                          nunca recebe arquivo solto diretamente)
-  DROPBOX_INBOX_PATH    (default: /01_ENTRADA_BRUTA/A_PROCESSAR - AQUI que
-                          o usuario salva as fotos/video novos do dia)
-  DROPBOX_DEST_ROOT     (default: /MIDIA_FINAL)
-  DROPBOX_LOGOS_PATH    (default: /LOGOS)
+  DROPBOX_ROOT           (default: /AUTOMACAO_ANUNCIOS - pasta guarda-chuva
+                          que reune tudo do projeto)
+  DROPBOX_SOURCE_PATH   (default: /AUTOMACAO_ANUNCIOS/01_ENTRADA_BRUTA -
+                          raiz de trabalho, nunca recebe arquivo solto)
+  DROPBOX_INBOX_PATH    (default: .../01_ENTRADA_BRUTA/A_PROCESSAR - AQUI
+                          que o usuario salva as fotos/video novos do dia)
+  DROPBOX_DEST_ROOT     (default: /AUTOMACAO_ANUNCIOS/MIDIA_FINAL)
+  DROPBOX_LOGOS_PATH    (default: /AUTOMACAO_ANUNCIOS/LOGOS - marcas gerais)
+  DROPBOX_LOGOS_HEXAGON_PATH (default: /AUTOMACAO_ANUNCIOS/LOGOS HEXAGON -
+                          checada ANTES da geral, produtos marca propria)
 
 Segredos OPCIONAIS (alertas por e-mail via Gmail SMTP - ainda nao
 cadastrados):
@@ -123,13 +127,18 @@ DBX_HEADERS_JSON = {
 OPENAI_API_KEY = os.environ["OPENAI_API_KEY"]
 PHOTOROOM_API_KEY = os.environ.get("PHOTOROOM_API_KEY")  # nao usado pra remover fundo (isso agora e rembg, gratis); fica reservado pro futuro recurso Gerada_IA
 
-DROPBOX_SOURCE_PATH = os.environ.get("DROPBOX_SOURCE_PATH", "/01_ENTRADA_BRUTA")
+DROPBOX_ROOT = os.environ.get("DROPBOX_ROOT", "/AUTOMACAO_ANUNCIOS")  # pasta guarda-chuva que reune tudo do projeto
+
+DROPBOX_SOURCE_PATH = os.environ.get("DROPBOX_SOURCE_PATH", f"{DROPBOX_ROOT}/01_ENTRADA_BRUTA")
 # pasta onde o usuario efetivamente salva as fotos/video novos do dia -
 # fica DENTRO de 01_ENTRADA_BRUTA, como irma de _REVISAR,
 # assim a raiz de 01_ENTRADA_BRUTA nunca fica com arquivo solto
 DROPBOX_INBOX_PATH = os.environ.get("DROPBOX_INBOX_PATH", f"{DROPBOX_SOURCE_PATH}/A_PROCESSAR")
-DROPBOX_DEST_ROOT = os.environ.get("DROPBOX_DEST_ROOT", "/MIDIA_FINAL")
-DROPBOX_LOGOS_PATH = os.environ.get("DROPBOX_LOGOS_PATH", "/LOGOS")
+DROPBOX_DEST_ROOT = os.environ.get("DROPBOX_DEST_ROOT", f"{DROPBOX_ROOT}/MIDIA_FINAL")
+DROPBOX_LOGOS_PATH = os.environ.get("DROPBOX_LOGOS_PATH", f"{DROPBOX_ROOT}/LOGOS")
+# pasta separada so pra logos de produtos da marca propria Hexagon -
+# checada ANTES da pasta geral de logos, pra dar prioridade
+DROPBOX_LOGOS_HEXAGON_PATH = os.environ.get("DROPBOX_LOGOS_HEXAGON_PATH", f"{DROPBOX_ROOT}/LOGOS HEXAGON")
 
 GMAIL_USER = os.environ.get("GMAIL_USER")
 GMAIL_APP_PASSWORD = os.environ.get("GMAIL_APP_PASSWORD")
@@ -247,16 +256,24 @@ def mover_lote_com_tolerancia(lote, pasta_destino):
         )
 
 
-def dbx_buscar_logo(marca):
-    if not marca:
-        return None
-    arquivos = dbx_listar_pasta(DROPBOX_LOGOS_PATH)
-    alvo = marca.strip().upper()
+def _buscar_logo_em(pasta, alvo):
+    arquivos = dbx_listar_pasta(pasta)
     for f in arquivos:
         nome_sem_ext = os.path.splitext(f["name"])[0].strip().upper()
         if nome_sem_ext == alvo:
             return dbx_baixar(f["path_lower"])
     return None
+
+
+def dbx_buscar_logo(marca):
+    if not marca:
+        return None
+    alvo = marca.strip().upper()
+    # pasta Hexagon primeiro (prioridade pra produtos da marca propria)
+    logo = _buscar_logo_em(DROPBOX_LOGOS_HEXAGON_PATH, alvo)
+    if logo:
+        return logo
+    return _buscar_logo_em(DROPBOX_LOGOS_PATH, alvo)
 
 
 # ============================================================
@@ -670,7 +687,6 @@ def processar_lote(lote):
         print(f"Foto da caixa girada {rotacao} graus pra ficar reta")
 
     timestamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%d_%H%M%S")
-    data_hoje = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d")
     identificador = sku or f"LOTE_{timestamp}"
     logo_bytes = dbx_buscar_logo(marca)
 
@@ -679,7 +695,17 @@ def processar_lote(lote):
     if aprovado:
         pasta_lote = f"{DROPBOX_DEST_ROOT}/{identificador}"
     else:
-        pasta_lote = f"{DROPBOX_SOURCE_PATH}/_REVISAR/{data_hoje}/{identificador}"
+        # organiza por MOTIVO do problema, nao por data - assim da pra ir
+        # direto na causa (ex: "SEM_LOGO_NGK" agrupa todos os lotes que so
+        # faltam o logo dessa marca especifica)
+        if not confiante and not logo_bytes:
+            motivo_pasta = "SKU_ILEGIVEL_SEM_LOGO"
+        elif not confiante:
+            motivo_pasta = "SKU_ILEGIVEL"
+        else:
+            marca_pasta = (marca or "MARCA_DESCONHECIDA").strip().upper().replace(" ", "_")
+            motivo_pasta = f"SEM_LOGO_{marca_pasta}"
+        pasta_lote = f"{DROPBOX_SOURCE_PATH}/_REVISAR/{motivo_pasta}/{identificador}"
 
     # pasta dos ORIGINAIS: sempre uma subpasta _ORIGINAIS dentro da propria
     # pasta do lote (MIDIA_FINAL/<SKU>/_ORIGINAIS ou _REVISAR/.../_ORIGINAIS)
@@ -716,6 +742,24 @@ def processar_lote(lote):
         f"{pasta_lote}/{identificador}_Caixa.jpg",
         editar_produto(caixa_bytes_original, logo_bytes),
     )
+
+    # --- Banners fixos obrigatorios (penultima e ultima foto), em TODA
+    # marca que vendemos, exceto ELRING (que tem tratamento proprio) ---
+    if aprovado and marca and marca.strip().upper() != "ELRING":
+        entrega_bytes = _buscar_logo_em(DROPBOX_LOGOS_HEXAGON_PATH, "ENTREGA HEXAGON")
+        logo_hex_bytes = _buscar_logo_em(DROPBOX_LOGOS_HEXAGON_PATH, "HEXAGON LOGO")
+        if entrega_bytes:
+            img = Image.open(io.BytesIO(entrega_bytes)).convert("RGB")
+            buf = io.BytesIO(); img.save(buf, format="JPEG", quality=95)
+            dbx_subir(f"{pasta_lote}/{identificador}_ZZ_EntregaHexagon.jpg", buf.getvalue())
+        else:
+            print(f"AVISO: banner 'ENTREGA HEXAGON' nao encontrado em {DROPBOX_LOGOS_HEXAGON_PATH}")
+        if logo_hex_bytes:
+            img = Image.open(io.BytesIO(logo_hex_bytes)).convert("RGB")
+            buf = io.BytesIO(); img.save(buf, format="JPEG", quality=95)
+            dbx_subir(f"{pasta_lote}/{identificador}_ZZZ_LogoHexagon.jpg", buf.getvalue())
+        else:
+            print(f"AVISO: banner 'HEXAGON LOGO' nao encontrado em {DROPBOX_LOGOS_HEXAGON_PATH}")
 
     video_bytes = dbx_baixar(video["path_lower"])
     dbx_subir(f"{pasta_lote}/{identificador}.mp4", video_bytes)
@@ -767,8 +811,7 @@ def main():
             # processar, so joga pra revisao manual sem tentar indexar
             nomes = [a["name"] for a in lote]
             timestamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%d_%H%M%S")
-            data_hoje = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d")
-            pasta_revisar = f"{DROPBOX_SOURCE_PATH}/_REVISAR/{data_hoje}/LOTE_INCOMPLETO_{timestamp}"
+            pasta_revisar = f"{DROPBOX_SOURCE_PATH}/_REVISAR/LOTE_INCOMPLETO/LOTE_{timestamp}"
             mover_lote_com_tolerancia(lote, pasta_revisar)
             enviar_alerta(
                 "Robo de Midias - lote invalido/orfao",
