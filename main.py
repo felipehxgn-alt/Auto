@@ -491,6 +491,40 @@ def aplicar_selo_original(canvas_rgba, caixa_bytes_original):
     return canvas_rgba
 
 
+def aplicar_selo_garantia(canvas_rgba):
+    """So na foto de CAPA: faixa 'GARANTIA 90 DIAS DE FABRICA' no canto
+    inferior esquerdo - so texto, sem miniatura, aproveitando o espaco
+    em branco que sobra nesse canto."""
+    from PIL import ImageDraw
+
+    largura_max = int(canvas_rgba.width * (LOGO_MAX_RATIO + 0.05))
+    altura_faixa = int(canvas_rgba.width * LOGO_MAX_RATIO * 0.28)
+
+    fonte = _carregar_fonte(max(10, int(altura_faixa * 0.42)))
+    texto = "GARANTIA 90 DIAS\nDE FABRICA"
+    draw_temp = ImageDraw.Draw(Image.new("RGB", (10, 10)))
+    bbox = draw_temp.multiline_textbbox((0, 0), texto, font=fonte, align="center")
+    texto_w, texto_h = bbox[2] - bbox[0], bbox[3] - bbox[1]
+
+    padding = int(altura_faixa * 0.18)
+    largura_selo = min(largura_max, texto_w + padding * 2)
+    altura_selo = texto_h + padding * 2
+
+    selo = Image.new("RGBA", (largura_selo, altura_selo), (20, 20, 20, 255))
+    draw = ImageDraw.Draw(selo)
+    pos_texto = ((largura_selo - texto_w) // 2 - bbox[0], (altura_selo - texto_h) // 2 - bbox[1])
+    draw.multiline_text(pos_texto, texto, fill=(255, 255, 255, 255), font=fonte, align="center")
+
+    borda = 4
+    selo_com_borda = Image.new("RGBA", (selo.width + borda * 2, selo.height + borda * 2), (255, 255, 255, 255))
+    selo_com_borda.paste(selo, (borda, borda))
+
+    margem = int(canvas_rgba.width * LOGO_MARGEM_RATIO)
+    pos = (margem, canvas_rgba.height - selo_com_borda.height - margem)
+    canvas_rgba.paste(selo_com_borda, pos, selo_com_borda)
+    return canvas_rgba
+
+
 def editar_produto(bytes_brutos, logo_bytes, selo_caixa_bytes=None):
     """Remove fundo + monta no canvas. Se a remocao de fundo (rembg)
     falhar, a foto continua indo com fundo original (evita perder a
@@ -507,6 +541,7 @@ def editar_produto(bytes_brutos, logo_bytes, selo_caixa_bytes=None):
     canvas = compor_produto_em_canvas(sem_fundo, logo_bytes)
     if selo_caixa_bytes:
         canvas = aplicar_selo_original(canvas, selo_caixa_bytes)
+        canvas = aplicar_selo_garantia(canvas)
     return imagem_para_jpg_bytes(canvas)
 
 
@@ -566,6 +601,62 @@ def checar_lote_pendente(lote_pendente):
 # ============================================================
 # PROCESSAMENTO DE UM LOTE
 # ============================================================
+def verificar_qualidade_foto(imagem_editada_bytes):
+    """Usa a mesma IA de visao pra checar se a foto (ja editada) tem
+    algum problema obvio: mao/dedo segurando a peca, ou coisa clara
+    demais errada no enquadramento. Retorna (ok:bool, motivo:str).
+    Em caso de erro tecnico, assume ok=True (nao bloqueia por causa de
+    falha da checagem em si - so bloqueia por problema real)."""
+    img_b64 = base64.b64encode(imagem_editada_bytes).decode("utf-8")
+    payload = {
+        "model": "gpt-4o-mini",
+        "messages": [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "text",
+                        "text": (
+                            "Esta e uma foto de produto editada pra catalogo de "
+                            "e-commerce (fundo branco). Verifique SO isto: aparece "
+                            "mao, dedo ou pessoa segurando a peca na foto? Responda "
+                            "SOMENTE em JSON: "
+                            '{"tem_problema": true/false, "motivo": "..."} '
+                            "sem texto adicional. motivo deve ser curto (poucas "
+                            "palavras) ou vazio se nao houver problema."
+                        ),
+                    },
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": f"data:image/jpeg;base64,{img_b64}"},
+                    },
+                ],
+            }
+        ],
+        "max_tokens": 100,
+    }
+    try:
+        resp = requests.post(
+            "https://api.openai.com/v1/chat/completions",
+            headers={
+                "Authorization": f"Bearer {OPENAI_API_KEY}",
+                "Content-Type": "application/json",
+            },
+            json=payload,
+            timeout=60,
+        )
+        resp.raise_for_status()
+        texto = resp.json()["choices"][0]["message"]["content"].strip()
+        texto = texto.replace("```json", "").replace("```", "").strip()
+        dados = json.loads(texto)
+        tem_problema = bool(dados.get("tem_problema", False))
+        motivo = dados.get("motivo") or ""
+        return (not tem_problema), motivo
+    except Exception as e:
+        print(f"Checagem de qualidade da foto falhou (nao bloqueia): {repr(e)}")
+        return True, ""
+
+
 def processar_lote(lote):
     caixa = lote[0]
     capa = lote[1]
@@ -596,16 +687,30 @@ def processar_lote(lote):
     pasta_originais = f"{pasta_lote}/_ORIGINAIS"
 
     # --- Edita e sobe TODAS as fotos, aprovado ou nao ---
+    fotos_com_problema = []
+
+    def subir_foto_produto(nome_arquivo, bytes_editados):
+        """Se o lote foi aprovado, checa qualidade individual da foto -
+        problema (ex: mao na foto) manda so essa foto pra _VERIFICAR,
+        sem afetar as outras fotos boas do mesmo lote."""
+        if aprovado:
+            ok, motivo = verificar_qualidade_foto(bytes_editados)
+            if not ok:
+                fotos_com_problema.append((nome_arquivo, motivo))
+                dbx_subir(f"{pasta_lote}/_VERIFICAR/{nome_arquivo}", bytes_editados)
+                return
+        dbx_subir(f"{pasta_lote}/{nome_arquivo}", bytes_editados)
+
     bruto = dbx_baixar(capa["path_lower"])
-    dbx_subir(
-        f"{pasta_lote}/{identificador}_Capa.jpg",
+    subir_foto_produto(
+        f"{identificador}_Capa.jpg",
         editar_produto(bruto, logo_bytes, selo_caixa_bytes=caixa_bytes_original),
     )
 
     for i, arq in enumerate(angulos, start=2):
         bruto = dbx_baixar(arq["path_lower"])
         nome_final = f"{identificador}_{str(i).zfill(2)}.jpg"
-        dbx_subir(f"{pasta_lote}/{nome_final}", editar_produto(bruto, logo_bytes))
+        subir_foto_produto(nome_final, editar_produto(bruto, logo_bytes))
 
     dbx_subir(
         f"{pasta_lote}/{identificador}_Caixa.jpg",
@@ -633,7 +738,14 @@ def processar_lote(lote):
         )
         print(f"Lote em _REVISAR ({pasta_lote}): {motivo}")
     else:
-        print(f"Lote publicado: {pasta_lote}")
+        if fotos_com_problema:
+            enviar_alerta(
+                "Robo de Midias - fotos com problema dentro de lote aprovado",
+                f"Pasta: {pasta_lote}\n"
+                f"O lote foi aprovado, mas estas fotos ficaram em _VERIFICAR: "
+                f"{fotos_com_problema}",
+            )
+        print(f"Lote publicado: {pasta_lote}" + (f" ({len(fotos_com_problema)} foto(s) em _VERIFICAR)" if fotos_com_problema else ""))
 
 
 # ============================================================
