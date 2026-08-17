@@ -125,7 +125,7 @@ PHOTOROOM_API_KEY = os.environ.get("PHOTOROOM_API_KEY")  # nao usado pra remover
 
 DROPBOX_SOURCE_PATH = os.environ.get("DROPBOX_SOURCE_PATH", "/01_ENTRADA_BRUTA")
 # pasta onde o usuario efetivamente salva as fotos/video novos do dia -
-# fica DENTRO de 01_ENTRADA_BRUTA, como irma de _PROCESSADOS e _REVISAR,
+# fica DENTRO de 01_ENTRADA_BRUTA, como irma de _REVISAR,
 # assim a raiz de 01_ENTRADA_BRUTA nunca fica com arquivo solto
 DROPBOX_INBOX_PATH = os.environ.get("DROPBOX_INBOX_PATH", f"{DROPBOX_SOURCE_PATH}/A_PROCESSAR")
 DROPBOX_DEST_ROOT = os.environ.get("DROPBOX_DEST_ROOT", "/MIDIA_FINAL")
@@ -461,13 +461,10 @@ def processar_lote(lote):
     else:
         pasta_lote = f"{DROPBOX_SOURCE_PATH}/_REVISAR/{data_hoje}/{identificador}"
 
-    # pasta dos ORIGINAIS: sempre dentro da entrada bruta, por data - nunca
-    # mistura com os arquivos editados finais (nem em MIDIA_FINAL nem em
-    # _REVISAR), pra nao bagunçar quem for so navegar o catalogo publicado
-    if aprovado:
-        pasta_originais = f"{DROPBOX_SOURCE_PATH}/_PROCESSADOS/{data_hoje}/{identificador}"
-    else:
-        pasta_originais = f"{pasta_lote}/_ORIGINAIS"  # fica dentro do lote, mas separado das fotos editadas
+    # pasta dos ORIGINAIS: sempre uma subpasta _ORIGINAIS dentro da propria
+    # pasta do lote (MIDIA_FINAL/<SKU>/_ORIGINAIS ou _REVISAR/.../_ORIGINAIS)
+    # - um unico padrao, tudo do mesmo lote junto num so lugar
+    pasta_originais = f"{pasta_lote}/_ORIGINAIS"
 
     # --- Edita e sobe TODAS as fotos, aprovado ou nao ---
     bruto = dbx_baixar(capa["path_lower"])
