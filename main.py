@@ -66,10 +66,17 @@ from PIL import Image
 # ============================================================
 # CONFIGURACOES
 # ============================================================
-DROPBOX_APP_KEY = os.environ.get("DROPBOX_APP_KEY")
-DROPBOX_APP_SECRET = os.environ.get("DROPBOX_APP_SECRET")
-DROPBOX_REFRESH_TOKEN = os.environ.get("DROPBOX_REFRESH_TOKEN")
-DROPBOX_ACCESS_TOKEN_FIXO = os.environ.get("DROPBOX_ACCESS_TOKEN")  # modo antigo, so fallback
+def _limpo(valor):
+    """Remove espacos/quebras de linha extras que podem vir de copiar e
+    colar um Secret no GitHub - causa comum de 'malformed' ou 'invalid
+    client' mesmo com o valor certo."""
+    return valor.strip() if valor else valor
+
+
+DROPBOX_APP_KEY = _limpo(os.environ.get("DROPBOX_APP_KEY"))
+DROPBOX_APP_SECRET = _limpo(os.environ.get("DROPBOX_APP_SECRET"))
+DROPBOX_REFRESH_TOKEN = _limpo(os.environ.get("DROPBOX_REFRESH_TOKEN"))
+DROPBOX_ACCESS_TOKEN_FIXO = _limpo(os.environ.get("DROPBOX_ACCESS_TOKEN"))  # modo antigo, so fallback
 
 
 def obter_dropbox_access_token():
@@ -84,9 +91,8 @@ def obter_dropbox_access_token():
             data={
                 "grant_type": "refresh_token",
                 "refresh_token": DROPBOX_REFRESH_TOKEN,
-                "client_id": DROPBOX_APP_KEY,
-                "client_secret": DROPBOX_APP_SECRET,
             },
+            auth=(DROPBOX_APP_KEY, DROPBOX_APP_SECRET),
             timeout=30,
         )
         if resp.status_code != 200:
