@@ -35,7 +35,12 @@ Segredos esperados (GitHub Secrets -> variaveis de ambiente):
   DROPBOX_APP_KEY, DROPBOX_APP_SECRET, DROPBOX_REFRESH_TOKEN (recomendado
   - nao expira, o script renova o access token sozinho a cada execucao)
   OU DROPBOX_ACCESS_TOKEN (modo antigo, expira em poucas horas)
-  OPENAI_API_KEY, PHOTOROOM_API_KEY
+  OPENAI_API_KEY
+
+Remocao de fundo: usa a biblioteca gratuita "rembg" (roda local, sem
+API paga, sem chave). PHOTOROOM_API_KEY NAO e mais obrigatorio - so
+fica reservado pra quando o recurso Gerada_IA (fundo por IA) for
+implementado no futuro.
 
 Variaveis opcionais (tem default):
   DROPBOX_SOURCE_PATH   (default: /01_ENTRADA_BRUTA)
@@ -84,7 +89,8 @@ def obter_dropbox_access_token():
             },
             timeout=30,
         )
-        resp.raise_for_status()
+        if resp.status_code != 200:
+            raise RuntimeError(f"Falha renovando token do Dropbox: {resp.status_code} - {resp.text}")
         return resp.json()["access_token"]
     if DROPBOX_ACCESS_TOKEN_FIXO:
         return DROPBOX_ACCESS_TOKEN_FIXO
@@ -105,7 +111,7 @@ DBX_HEADERS_JSON = {
 }
 
 OPENAI_API_KEY = os.environ["OPENAI_API_KEY"]
-PHOTOROOM_API_KEY = os.environ["PHOTOROOM_API_KEY"]
+PHOTOROOM_API_KEY = os.environ.get("PHOTOROOM_API_KEY")  # nao usado pra remover fundo (isso agora e rembg, gratis); fica reservado pro futuro recurso Gerada_IA
 
 DROPBOX_SOURCE_PATH = os.environ.get("DROPBOX_SOURCE_PATH", "/01_ENTRADA_BRUTA")
 DROPBOX_DEST_ROOT = os.environ.get("DROPBOX_DEST_ROOT", "/MIDIA_FINAL")
@@ -297,17 +303,11 @@ def identificar_sku_marca(imagem_bytes):
 
 
 # ============================================================
-# PHOTOROOM - REMOCAO DE FUNDO
+# REMOCAO DE FUNDO (rembg - biblioteca gratuita, roda local, sem API paga)
 # ============================================================
 def remover_fundo(imagem_bytes):
-    resp = requests.post(
-        "https://sdk.photoroom.com/v1/segment",
-        headers={"x-api-key": PHOTOROOM_API_KEY},
-        files={"image_file": ("imagem.jpg", imagem_bytes)},
-        timeout=60,
-    )
-    resp.raise_for_status()
-    return resp.content
+    from rembg import remove as rembg_remove
+    return rembg_remove(imagem_bytes)
 
 
 # ============================================================
