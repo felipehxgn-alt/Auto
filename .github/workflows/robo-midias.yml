@@ -15,12 +15,11 @@ jobs:
           python-version: '3.11'
       - name: Install dependencies
         run: |
-          pip install requests Pillow
+          pip install requests Pillow rembg onnxruntime
       - name: Run script
         env:
           DROPBOX_APP_KEY: ${{ secrets.DROPBOX_APP_KEY }}
           DROPBOX_APP_SECRET: ${{ secrets.DROPBOX_APP_SECRET }}
           DROPBOX_REFRESH_TOKEN: ${{ secrets.DROPBOX_REFRESH_TOKEN }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-          PHOTOROOM_API_KEY: ${{ secrets.PHOTOROOM_API_KEY }}
         run: python main.py
