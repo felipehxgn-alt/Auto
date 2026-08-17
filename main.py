@@ -32,7 +32,10 @@ NOMENCLATURA DENTRO DA PASTA DO LOTE:
   identificador provisorio LOTE_AAAAMMDD_HHMMSS e usado no lugar)
 
 Segredos esperados (GitHub Secrets -> variaveis de ambiente):
-  DROPBOX_ACCESS_TOKEN, OPENAI_API_KEY, PHOTOROOM_API_KEY
+  DROPBOX_APP_KEY, DROPBOX_APP_SECRET, DROPBOX_REFRESH_TOKEN (recomendado
+  - nao expira, o script renova o access token sozinho a cada execucao)
+  OU DROPBOX_ACCESS_TOKEN (modo antigo, expira em poucas horas)
+  OPENAI_API_KEY, PHOTOROOM_API_KEY
 
 Variaveis opcionais (tem default):
   DROPBOX_SOURCE_PATH   (default: /01_ENTRADA_BRUTA)
@@ -58,7 +61,49 @@ from PIL import Image
 # ============================================================
 # CONFIGURACOES
 # ============================================================
-DROPBOX_ACCESS_TOKEN = os.environ["DROPBOX_ACCESS_TOKEN"]
+DROPBOX_APP_KEY = os.environ.get("DROPBOX_APP_KEY")
+DROPBOX_APP_SECRET = os.environ.get("DROPBOX_APP_SECRET")
+DROPBOX_REFRESH_TOKEN = os.environ.get("DROPBOX_REFRESH_TOKEN")
+DROPBOX_ACCESS_TOKEN_FIXO = os.environ.get("DROPBOX_ACCESS_TOKEN")  # modo antigo, so fallback
+
+
+def obter_dropbox_access_token():
+    """Se houver refresh token configurado, troca ele por um access
+    token novo (curta duracao, ~4h) a cada execucao - nunca expira de
+    verdade porque e renovado sozinho toda vez que o robo roda. Se nao
+    houver refresh token configurado, usa o DROPBOX_ACCESS_TOKEN fixo
+    (modo antigo, so funciona por algumas horas)."""
+    if DROPBOX_REFRESH_TOKEN and DROPBOX_APP_KEY and DROPBOX_APP_SECRET:
+        resp = requests.post(
+            "https://api.dropboxapi.com/oauth2/token",
+            data={
+                "grant_type": "refresh_token",
+                "refresh_token": DROPBOX_REFRESH_TOKEN,
+                "client_id": DROPBOX_APP_KEY,
+                "client_secret": DROPBOX_APP_SECRET,
+            },
+            timeout=30,
+        )
+        resp.raise_for_status()
+        return resp.json()["access_token"]
+    if DROPBOX_ACCESS_TOKEN_FIXO:
+        return DROPBOX_ACCESS_TOKEN_FIXO
+    raise RuntimeError(
+        "Nenhuma credencial do Dropbox configurada: defina DROPBOX_REFRESH_TOKEN "
+        "+ DROPBOX_APP_KEY + DROPBOX_APP_SECRET (recomendado), ou DROPBOX_ACCESS_TOKEN "
+        "(temporario, expira em horas)."
+    )
+
+
+DROPBOX_ACCESS_TOKEN = obter_dropbox_access_token()
+
+DBX_API = "https://api.dropboxapi.com/2"
+DBX_CONTENT = "https://content.dropboxapi.com/2"
+DBX_HEADERS_JSON = {
+    "Authorization": f"Bearer {DROPBOX_ACCESS_TOKEN}",
+    "Content-Type": "application/json",
+}
+
 OPENAI_API_KEY = os.environ["OPENAI_API_KEY"]
 PHOTOROOM_API_KEY = os.environ["PHOTOROOM_API_KEY"]
 
@@ -77,13 +122,6 @@ LOGO_MARGEM_RATIO = 0.15
 LOTE_INCOMPLETO_MINUTOS = 10
 
 VIDEO_EXTS = (".mp4", ".mov")
-
-DBX_API = "https://api.dropboxapi.com/2"
-DBX_CONTENT = "https://content.dropboxapi.com/2"
-DBX_HEADERS_JSON = {
-    "Authorization": f"Bearer {DROPBOX_ACCESS_TOKEN}",
-    "Content-Type": "application/json",
-}
 
 
 # ============================================================
@@ -456,6 +494,20 @@ def main():
     checar_lote_pendente(lote_pendente)
 
     for lote in lotes:
+        if len(lote) < 3:
+            # video "orfao" (sem caixa/capa por perto) - nao da pra
+            # processar, so joga pra revisao manual sem tentar indexar
+            nomes = [a["name"] for a in lote]
+            timestamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%d_%H%M%S")
+            pasta_revisar = f"{DROPBOX_SOURCE_PATH}/_REVISAR/LOTE_INCOMPLETO_{timestamp}"
+            mover_lote_com_tolerancia(lote, pasta_revisar)
+            enviar_alerta(
+                "Robo de Midias - lote invalido/orfao",
+                f"Arquivos sem caixa/capa correspondentes, movidos para "
+                f"{pasta_revisar}: {nomes}",
+            )
+            print(f"Lote invalido (orfao) movido para {pasta_revisar}: {nomes}")
+            continue
         try:
             processar_lote(lote)
         except Exception as e:
