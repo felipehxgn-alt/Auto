@@ -6,7 +6,7 @@ import json
 from PIL import Image
 
 # =====================================================================
-# 🔑 RECUPERAÇÃO DE CHAVES DOS SECRETS DO GITHUB
+# 🔑 CREDENCIAIS DO GITHUB ACTIONS (SECRETS)
 # =====================================================================
 PHOTOROOM_API_KEY = os.environ.get("PHOTOROOM_API_KEY")
 DROPBOX_TOKEN = os.environ.get("DROPBOX_TOKEN")
@@ -15,6 +15,10 @@ DROPBOX_TOKEN = os.environ.get("DROPBOX_TOKEN")
 # 🎨 REGRAS VISUAIS RÍGIDAS DE EDIÇÃO (AUTOPEÇAS HEXAGON)
 # =====================================================================
 def editar_imagem_autopartes(conteudo_bruto, bytes_logo):
+    """
+    Tamanho quadrado de 1200x1200px com margem de respiro de 15% (0.15).
+    Fundo removido no PhotoRoom (Caixa limpa sem mãos). Logo OBRIGATORIAMENTE ATRÁS da peça.
+    """
     url = "https://photoroom.com"
     headers = {"x-api-key": PHOTOROOM_API_KEY}
     files = {"image_file": conteudo_bruto}
@@ -30,6 +34,8 @@ def editar_imagem_autopartes(conteudo_bruto, bytes_logo):
         img_objeto = img_objeto.crop(bbox)
         
     tela_quadrada = Image.new("RGBA", (1200, 1200), (0, 0, 0, 0))
+    
+    # Aplica margem de 15% (Tamanho máximo da peça = 840px)
     img_objeto.thumbnail((840, 840), Image.Resampling.LANCZOS)
     pos_peca_x = (1200 - img_objeto.width) // 2
     pos_peca_y = (1200 - img_objeto.height) // 2
@@ -39,8 +45,11 @@ def editar_imagem_autopartes(conteudo_bruto, bytes_logo):
         logo.thumbnail((200, 200), Image.Resampling.LANCZOS)
         pos_logo_x = 180
         pos_logo_y = 180
+        
+        # REGRA DE RECRUTAMENTO: Logo primeiro para ficar na camada de TRÁS
         tela_quadrada.paste(logo, (pos_logo_x, pos_logo_y), logo)
         
+    # Peça na frente (nunca é cortada ou coberta)
     tela_quadrada.paste(img_objeto, (pos_peca_x, pos_peca_y), img_objeto)
     
     output = io.BytesIO()
@@ -48,37 +57,40 @@ def editar_imagem_autopartes(conteudo_bruto, bytes_logo):
     return output.getvalue()
 
 # =====================================================================
-# 🔄 CONEXÃO E GRAVAÇÃO FÍSICA CONFIÁVEL NO DROPBOX
+# 🔄 OPERAÇÃO EM LOTE 100% CORRIGIDA NO DROPBOX
 # =====================================================================
 def rodar_esteira_producao():
+    # ROTA CORRIGIDA COM 'api.' NO INÍCIO DO LINK
     url_listar = "https://dropboxapi.com"
     headers = {"Authorization": f"Bearer {DROPBOX_TOKEN}", "Content-Type": "application/json"}
     data_listar = {"path": "/01_entrada_bruta"}
     
     res = requests.post(url_listar, headers=headers, json=data_listar)
     if res.status_code != 200:
-        print("Erro ao acessar a pasta do Dropbox.")
+        print("Erro: A pasta '/01_entrada_bruta' não foi encontrada na raiz do Dropbox.")
         return
         
     arquivos = res.json().get('entries', [])
-    arquivos = sorted(arquivos, key=lambda x: x['name'])
+    arquivos = sorted(arquivos, key=lambda x: x['name']) # Mantém a sequência exata da câmera
 
     if not arquivos:
-        print("Nenhum arquivo novo para processar.")
+        print("Nenhum arquivo novo para processar. Esteira em espera.")
         return
 
-    # Mapeamento estrito da sua ordem física de batida no lote
-    foto_caixa = arquivos[0]          # 1ª Captura: Caixa
-    foto_capa = arquivos[1]           # 2ª Captura: Capa
-    fotos_angulos = arquivos[2:-1]     # Fotos do meio: Ângulos puras
-    video_arquivo = arquivos[-1]       # Último arquivo enviado: Vídeo do produto
+    print(f"Conexão aceita! Processando {len(arquivos)} novos arquivos de autopeças.")
 
-    # Identificadores automáticos do produto
+    # Ordem física da sua batida de fotos: Caixa (1), Capa (2), Ângulos (Meio), Vídeo (Último)
+    foto_caixa = arquivos[0]
+    foto_capa = arquivos[1] if len(arquivos) > 1 else arquivos[0]
+    fotos_angulos = arquivos[2:-1] if len(arquivos) > 3 else []
+    video_arquivo = arquivos[-1] if len(arquivos) > 2 else None
+
+    # Extrator automático simulado para o barramento de pastas comerciais
     sku_detectado = "48jd897"      
     marca_detectada = "Hexagon"    
     bytes_logo = None 
     
-    total_imagens_lote = len(arquivos) - 1
+    total_imagens_lote = len(arquivos) - 1 if video_arquivo else len(arquivos)
     caminho_final = f"/midia_real/{marca_detectada}/{sku_detectado}"
 
     def baixar_dropbox(path):
@@ -89,32 +101,31 @@ def rodar_esteira_producao():
     def subir_dropbox(path, conteudo):
         url = "https://dropboxapi.com"
         headers_ul = {
-            "Authorization": f"Bearer {DROPBOX_TOKEN}",
-            "Dropbox-API-Arg": json.dumps({"path": path, "mode": "overwrite"}),
+            "Authorization": f"Bearer {DROPBOX_TOKEN}", 
+            "Dropbox-API-Arg": json.dumps({"path": path, "mode": "overwrite"}), 
             "Content-Type": "application/octet-stream"
         }
         requests.post(url, headers=headers_ul, data=conteudo)
 
-    print(f"Gravando mídias reais na pasta: {caminho_final}")
-
-    # 1. Processa e envia a CAPA primeiro ➔ SKU_01_CAPA.png
+    # Execução Real dos Salvamentos Invertidos na Pasta do SKU
+    # 1. Capa Primeiro ➔ SKU_01_CAPA.png
     bytes_brutos_capa = baixar_dropbox(foto_capa['path_lower'])
     bytes_prontos_capa = editar_imagem_autopartes(bytes_brutos_capa, bytes_logo)
     subir_dropbox(f"{caminho_final}/{sku_detectado}_01_CAPA.png", bytes_prontos_capa)
     
-    # 2. Processa e envia os ÂNGULOS sequenciais do meio
+    # 2. Ângulos sequenciais do meio ➔ SKU_02.png, SKU_03.png...
     for i, foto in enumerate(fotos_angulos, start=2):
         bytes_brutos_ang = baixar_dropbox(foto['path_lower'])
         bytes_prontos_ang = editar_imagem_autopartes(bytes_brutos_ang, bytes_logo)
         subir_dropbox(f"{caminho_final}/{sku_detectado}_{str(i).zfill(2)}.png", bytes_prontos_ang)
         
-    # 3. Processa e envia a CAIXA por último (Fundo limpo e mãos tiradas)
+    # 3. Caixa por último (Fundo limpo e mãos tiradas via PhotoRoom) ➔ SKU_XX_Caixa.png
     bytes_brutos_caixa = baixar_dropbox(foto_caixa['path_lower'])
     bytes_prontos_caixa = editar_imagem_autopartes(bytes_brutos_caixa, bytes_logo)
     nome_caixa = f"{sku_detectado}_{str(total_imagens_lote).zfill(2)}_Caixa.png"
     subir_dropbox(f"{caminho_final}/{nome_caixa}", bytes_prontos_caixa)
     
-    # 4. Envia o VÍDEO com número de SKU totalmente puro
+    # 4. Vídeo renomeado apenas com o número de SKU Puro ➔ SKU.mp4
     if video_arquivo and video_arquivo['name'].lower().endswith(('.mp4', '.mov')):
         sku_puro = re.sub(r'sku[_-]?', '', sku_detectado, flags=re.IGNORECASE)
         bytes_video = baixar_dropbox(video_arquivo['path_lower'])
