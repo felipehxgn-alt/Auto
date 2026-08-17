@@ -438,15 +438,24 @@ def processar_lote(lote):
     sku, marca, confiante = identificar_sku_marca(caixa_bytes_original)
 
     timestamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%d_%H%M%S")
+    data_hoje = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d")
     identificador = sku or f"LOTE_{timestamp}"
     logo_bytes = dbx_buscar_logo(marca)
 
     aprovado = bool(confiante and logo_bytes)
 
     if aprovado:
-        pasta_lote = f"{DROPBOX_DEST_ROOT}/{marca}/{identificador}"
+        pasta_lote = f"{DROPBOX_DEST_ROOT}/{data_hoje}/{identificador}"
     else:
-        pasta_lote = f"{DROPBOX_SOURCE_PATH}/_REVISAR/{identificador}"
+        pasta_lote = f"{DROPBOX_SOURCE_PATH}/_REVISAR/{data_hoje}/{identificador}"
+
+    # pasta dos ORIGINAIS: sempre dentro da entrada bruta, por data - nunca
+    # mistura com os arquivos editados finais (nem em MIDIA_FINAL nem em
+    # _REVISAR), pra nao bagunçar quem for so navegar o catalogo publicado
+    if aprovado:
+        pasta_originais = f"{DROPBOX_SOURCE_PATH}/_PROCESSADOS/{data_hoje}/{identificador}"
+    else:
+        pasta_originais = pasta_lote  # em _REVISAR fica tudo junto (fotos editadas + originais), pra facilitar a revisao manual
 
     # --- Edita e sobe TODAS as fotos, aprovado ou nao ---
     bruto = dbx_baixar(capa["path_lower"])
@@ -466,7 +475,7 @@ def processar_lote(lote):
     dbx_subir(f"{pasta_lote}/{identificador}.mp4", video_bytes)
 
     # --- Move TODOS os originais (inclusive a caixa) pra fora da entrada ---
-    mover_lote_com_tolerancia(lote, pasta_lote)
+    mover_lote_com_tolerancia(lote, pasta_originais)
 
     if not aprovado:
         motivo = []
@@ -505,7 +514,8 @@ def main():
             # processar, so joga pra revisao manual sem tentar indexar
             nomes = [a["name"] for a in lote]
             timestamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%d_%H%M%S")
-            pasta_revisar = f"{DROPBOX_SOURCE_PATH}/_REVISAR/LOTE_INCOMPLETO_{timestamp}"
+            data_hoje = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d")
+            pasta_revisar = f"{DROPBOX_SOURCE_PATH}/_REVISAR/{data_hoje}/LOTE_INCOMPLETO_{timestamp}"
             mover_lote_com_tolerancia(lote, pasta_revisar)
             enviar_alerta(
                 "Robo de Midias - lote invalido/orfao",
