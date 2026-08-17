@@ -8,11 +8,40 @@ ORDEM DE CAPTURA (no celular/camera):
   3..N. Fotos de angulo/detalhe do produto
   Ultimo arquivo = video (fecha o lote)
 
-NOMENCLATURA DE SAIDA (pasta <DEST_ROOT>/Marca/SKU):
-  SKU_Capa.jpg   -> foto de capa
-  SKU_02.jpg, SKU_03.jpg, ...  -> angulos, em ordem
-  SKU_Caixa.jpg  -> foto da caixa (fundo limpo)
-  SKU.mp4        -> video (nome = so o SKU)
+REGRA DE OURO: a edicao das fotos (remover fundo, montar no canvas, logo)
+SEMPRE acontece, mesmo se a leitura da caixa falhar ou o logo nao for
+encontrado. O que muda e SO o destino:
+  - Leitura confiavel + logo encontrado  -> vai pra MIDIA_FINAL/Marca/SKU
+    (pronto pra anunciar)
+  - Qualquer duvida (leitura ruim, marca sem logo cadastrado, erro na
+    identificacao) -> vai pra 01_ENTRADA_BRUTA/_REVISAR/<pasta-do-lote>,
+    com as fotos JA EDITADAS. Se so faltou o SKU certo, o usuario so
+    precisa renomear a pasta - nao precisa reprocessar nada.
+
+Cada lote (aprovado ou nao) sempre cai numa pasta PROPRIA, nunca solto
+na raiz. Os arquivos originais (inclusive a foto da caixa) sempre saem
+da entrada bruta - cada movimentacao e feita arquivo por arquivo, entao
+uma falha isolada nunca trava ou deixa outro arquivo perdido.
+
+NOMENCLATURA DENTRO DA PASTA DO LOTE:
+  <ID>_Capa.jpg   -> foto de capa
+  <ID>_02.jpg, <ID>_03.jpg, ...  -> angulos, em ordem
+  <ID>_Caixa.jpg  -> foto da caixa (fundo limpo)
+  <ID>.mp4        -> video
+  (<ID> = SKU lido na caixa; se a leitura falhar totalmente, um
+  identificador provisorio LOTE_AAAAMMDD_HHMMSS e usado no lugar)
+
+Segredos esperados (GitHub Secrets -> variaveis de ambiente):
+  DROPBOX_ACCESS_TOKEN, OPENAI_API_KEY, PHOTOROOM_API_KEY
+
+Variaveis opcionais (tem default):
+  DROPBOX_SOURCE_PATH   (default: /01_ENTRADA_BRUTA)
+  DROPBOX_DEST_ROOT     (default: /MIDIA_FINAL)
+  DROPBOX_LOGOS_PATH    (default: /LOGOS)
+
+Segredos OPCIONAIS (alertas por e-mail via Gmail SMTP - ainda nao
+cadastrados):
+  GMAIL_USER, GMAIL_APP_PASSWORD, ALERT_EMAIL_TO
 """
 
 import os
@@ -27,7 +56,7 @@ import requests
 from PIL import Image
 
 # ============================================================
-# CONFIGURACOES (lidas do ambiente / GitHub Secrets)
+# CONFIGURACOES
 # ============================================================
 DROPBOX_ACCESS_TOKEN = os.environ["DROPBOX_ACCESS_TOKEN"]
 OPENAI_API_KEY = os.environ["OPENAI_API_KEY"]
@@ -128,7 +157,9 @@ def dbx_garantir_pasta(path):
         resp.raise_for_status()
 
 
-def dbx_mover(from_path, to_path):
+def dbx_mover_um_arquivo(from_path, to_path):
+    """Move um unico arquivo. Nunca deixa uma falha isolada travar o
+    restante do lote - quem chama decide o que fazer se der erro."""
     dbx_garantir_pasta(os.path.dirname(to_path))
     resp = requests.post(
         f"{DBX_API}/files/move_v2",
@@ -139,7 +170,28 @@ def dbx_mover(from_path, to_path):
     resp.raise_for_status()
 
 
+def mover_lote_com_tolerancia(lote, pasta_destino):
+    """Move cada arquivo original do lote pra pasta_destino, um de cada
+    vez. Se um falhar, registra e continua com os outros - nenhum
+    arquivo original fica perdido/esquecido na entrada bruta por causa
+    de erro em outro arquivo do mesmo lote."""
+    falhas = []
+    for arq in lote:
+        destino = f"{pasta_destino}/{arq['name']}"
+        try:
+            dbx_mover_um_arquivo(arq["path_lower"], destino)
+        except Exception as e:
+            falhas.append((arq["name"], repr(e)))
+    if falhas:
+        enviar_alerta(
+            "Robo de Midias - falha movendo arquivos originais",
+            f"Pasta destino: {pasta_destino}\nFalhas: {falhas}",
+        )
+
+
 def dbx_buscar_logo(marca):
+    if not marca:
+        return None
     arquivos = dbx_listar_pasta(DROPBOX_LOGOS_PATH)
     alvo = marca.strip().upper()
     for f in arquivos:
@@ -153,6 +205,8 @@ def dbx_buscar_logo(marca):
 # OPENAI - LEITURA DE SKU E MARCA NA FOTO DA CAIXA
 # ============================================================
 def identificar_sku_marca(imagem_bytes):
+    """Retorna (sku_ou_None, marca_ou_None, confiante:bool). Nunca
+    inventa valor - se o modelo nao tiver certeza, confiante=False."""
     img_b64 = base64.b64encode(imagem_bytes).decode("utf-8")
     payload = {
         "model": "gpt-4o-mini",
@@ -167,8 +221,9 @@ def identificar_sku_marca(imagem_bytes):
                             "codigo SKU e o nome da MARCA impressos na caixa. "
                             "Responda SOMENTE em JSON no formato "
                             '{"sku": "...", "marca": "...", "confiante": true/false} '
-                            "sem nenhum texto adicional. 'confiante' deve ser false "
-                            "se o texto estiver ilegivel, cortado ou ambiguo."
+                            "sem nenhum texto adicional. Se nao conseguir ler algo, "
+                            'use null nesse campo. "confiante" deve ser false se o '
+                            "texto estiver ilegivel, cortado ou ambiguo."
                         ),
                     },
                     {
@@ -180,20 +235,27 @@ def identificar_sku_marca(imagem_bytes):
         ],
         "max_tokens": 200,
     }
-    resp = requests.post(
-        "https://api.openai.com/v1/chat/completions",
-        headers={
-            "Authorization": f"Bearer {OPENAI_API_KEY}",
-            "Content-Type": "application/json",
-        },
-        json=payload,
-        timeout=60,
-    )
-    resp.raise_for_status()
-    texto = resp.json()["choices"][0]["message"]["content"].strip()
-    texto = texto.replace("```json", "").replace("```", "").strip()
-    dados = json.loads(texto)
-    return dados["sku"].strip(), dados["marca"].strip(), bool(dados.get("confiante", False))
+    try:
+        resp = requests.post(
+            "https://api.openai.com/v1/chat/completions",
+            headers={
+                "Authorization": f"Bearer {OPENAI_API_KEY}",
+                "Content-Type": "application/json",
+            },
+            json=payload,
+            timeout=60,
+        )
+        resp.raise_for_status()
+        texto = resp.json()["choices"][0]["message"]["content"].strip()
+        texto = texto.replace("```json", "").replace("```", "").strip()
+        dados = json.loads(texto)
+        sku = (dados.get("sku") or "").strip() or None
+        marca = (dados.get("marca") or "").strip() or None
+        confiante = bool(dados.get("confiante", False)) and sku and marca
+        return sku, marca, confiante
+    except Exception as e:
+        print(f"Falha lendo SKU/marca na caixa: {repr(e)}")
+        return None, None, False
 
 
 # ============================================================
@@ -252,6 +314,18 @@ def imagem_para_jpg_bytes(imagem_rgba):
     buf = io.BytesIO()
     fundo.save(buf, format="JPEG", quality=92)
     return buf.getvalue()
+
+
+def editar_produto(bytes_brutos, logo_bytes):
+    """Remove fundo + monta no canvas. Se o PhotoRoom falhar, sobe a
+    logo ainda vale mas o fundo NAO sai (evita perder a foto)."""
+    try:
+        sem_fundo = remover_fundo(bytes_brutos)
+    except Exception as e:
+        print(f"PhotoRoom falhou, usando imagem original: {repr(e)}")
+        sem_fundo = bytes_brutos
+    canvas = compor_produto_em_canvas(sem_fundo, logo_bytes)
+    return imagem_para_jpg_bytes(canvas)
 
 
 # ============================================================
@@ -319,52 +393,53 @@ def processar_lote(lote):
     caixa_bytes_original = dbx_baixar(caixa["path_lower"])
     sku, marca, confiante = identificar_sku_marca(caixa_bytes_original)
 
+    timestamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%d_%H%M%S")
+    identificador = sku or f"LOTE_{timestamp}"
     logo_bytes = dbx_buscar_logo(marca)
 
-    if not confiante or not logo_bytes:
+    aprovado = bool(confiante and logo_bytes)
+
+    if aprovado:
+        pasta_lote = f"{DROPBOX_DEST_ROOT}/{marca}/{identificador}"
+    else:
+        pasta_lote = f"{DROPBOX_SOURCE_PATH}/_REVISAR/{identificador}"
+
+    # --- Edita e sobe TODAS as fotos, aprovado ou nao ---
+    bruto = dbx_baixar(capa["path_lower"])
+    dbx_subir(f"{pasta_lote}/{identificador}_Capa.jpg", editar_produto(bruto, logo_bytes))
+
+    for i, arq in enumerate(angulos, start=2):
+        bruto = dbx_baixar(arq["path_lower"])
+        nome_final = f"{identificador}_{str(i).zfill(2)}.jpg"
+        dbx_subir(f"{pasta_lote}/{nome_final}", editar_produto(bruto, logo_bytes))
+
+    dbx_subir(
+        f"{pasta_lote}/{identificador}_Caixa.jpg",
+        editar_produto(caixa_bytes_original, logo_bytes),
+    )
+
+    video_bytes = dbx_baixar(video["path_lower"])
+    dbx_subir(f"{pasta_lote}/{identificador}.mp4", video_bytes)
+
+    # --- Move TODOS os originais (inclusive a caixa) pra fora da entrada ---
+    mover_lote_com_tolerancia(lote, pasta_lote)
+
+    if not aprovado:
         motivo = []
         if not confiante:
             motivo.append("SKU/marca nao lidos com confianca na foto da caixa")
         if not logo_bytes:
-            motivo.append(f"logo da marca '{marca}' nao encontrado em {DROPBOX_LOGOS_PATH}")
-        for arq in lote:
-            destino = f"{DROPBOX_SOURCE_PATH}/_REVISAR/{arq['name']}"
-            dbx_mover(arq["path_lower"], destino)
+            motivo.append(f"logo da marca '{marca or '(nao identificada)'}' nao encontrado em {DROPBOX_LOGOS_PATH}")
         enviar_alerta(
             "Robo de Midias - lote precisa de revisao manual",
-            f"SKU detectado: {sku} | Marca detectada: {marca}\n"
+            f"Pasta: {pasta_lote}\n"
+            f"SKU detectado: {sku or '(nenhum)'} | Marca detectada: {marca or '(nenhuma)'}\n"
             f"Motivo: {', '.join(motivo)}\n"
-            f"Arquivos movidos para _REVISAR: {[a['name'] for a in lote]}",
+            f"Fotos ja editadas estao nessa pasta - so falta renomear/ajustar.",
         )
-        print(f"Lote movido para _REVISAR (SKU={sku}, Marca={marca}): {motivo}")
-        return
-
-    pasta_sku = f"{DROPBOX_DEST_ROOT}/{marca}/{sku}"
-
-    bruto = dbx_baixar(capa["path_lower"])
-    sem_fundo = remover_fundo(bruto)
-    canvas = compor_produto_em_canvas(sem_fundo, logo_bytes)
-    dbx_subir(f"{pasta_sku}/{sku}_Capa.jpg", imagem_para_jpg_bytes(canvas))
-
-    for i, arq in enumerate(angulos, start=2):
-        bruto = dbx_baixar(arq["path_lower"])
-        sem_fundo = remover_fundo(bruto)
-        canvas = compor_produto_em_canvas(sem_fundo, logo_bytes)
-        nome_final = f"{sku}_{str(i).zfill(2)}.jpg"
-        dbx_subir(f"{pasta_sku}/{nome_final}", imagem_para_jpg_bytes(canvas))
-
-    caixa_sem_fundo = remover_fundo(caixa_bytes_original)
-    canvas_caixa = compor_produto_em_canvas(caixa_sem_fundo, logo_bytes)
-    dbx_subir(f"{pasta_sku}/{sku}_Caixa.jpg", imagem_para_jpg_bytes(canvas_caixa))
-
-    video_bytes = dbx_baixar(video["path_lower"])
-    dbx_subir(f"{pasta_sku}/{sku}.mp4", video_bytes)
-
-    for arq in lote:
-        destino = f"{DROPBOX_SOURCE_PATH}/_PROCESSADOS/{arq['name']}"
-        dbx_mover(arq["path_lower"], destino)
-
-    print(f"Lote processado: SKU={sku} Marca={marca} ({len(lote)} arquivos)")
+        print(f"Lote em _REVISAR ({pasta_lote}): {motivo}")
+    else:
+        print(f"Lote publicado: {pasta_lote}")
 
 
 # ============================================================
