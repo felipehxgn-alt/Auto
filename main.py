@@ -11,10 +11,11 @@ ORDEM DE CAPTURA (no celular/camera):
 REGRA DE OURO: a edicao das fotos (remover fundo, montar no canvas, logo)
 SEMPRE acontece, mesmo se a leitura da caixa falhar ou o logo nao for
 encontrado. O que muda e SO o destino:
-  - Leitura confiavel + logo encontrado  -> vai pra MIDIA_FINAL/Marca/SKU
-    (pronto pra anunciar)
+  - Leitura confiavel + logo encontrado  -> vai pra MIDIA_FINAL/SKU
+    (pronto pra anunciar - organizado so por SKU, sem data nem marca,
+    pra facilitar achar depois pela busca do Dropbox)
   - Qualquer duvida (leitura ruim, marca sem logo cadastrado, erro na
-    identificacao) -> vai pra 01_ENTRADA_BRUTA/_REVISAR/<pasta-do-lote>,
+    identificacao) -> vai pra 01_ENTRADA_BRUTA/_REVISAR/AAAA-MM-DD/<pasta-do-lote>,
     com as fotos JA EDITADAS. Se so faltou o SKU certo, o usuario so
     precisa renomear a pasta - nao precisa reprocessar nada.
 
@@ -361,12 +362,16 @@ def imagem_para_jpg_bytes(imagem_rgba):
 
 
 def editar_produto(bytes_brutos, logo_bytes):
-    """Remove fundo + monta no canvas. Se o PhotoRoom falhar, sobe a
-    logo ainda vale mas o fundo NAO sai (evita perder a foto)."""
+    """Remove fundo + monta no canvas. Se a remocao de fundo (rembg)
+    falhar, a foto continua indo com fundo original (evita perder a
+    foto), mas registra o erro completo no log pra facilitar
+    diagnostico."""
     try:
         sem_fundo = remover_fundo(bytes_brutos)
     except Exception as e:
-        print(f"PhotoRoom falhou, usando imagem original: {repr(e)}")
+        import traceback
+        print(f"Remocao de fundo (rembg) falhou, usando imagem original: {repr(e)}")
+        traceback.print_exc()
         sem_fundo = bytes_brutos
     canvas = compor_produto_em_canvas(sem_fundo, logo_bytes)
     return imagem_para_jpg_bytes(canvas)
@@ -445,7 +450,7 @@ def processar_lote(lote):
     aprovado = bool(confiante and logo_bytes)
 
     if aprovado:
-        pasta_lote = f"{DROPBOX_DEST_ROOT}/{data_hoje}/{identificador}"
+        pasta_lote = f"{DROPBOX_DEST_ROOT}/{identificador}"
     else:
         pasta_lote = f"{DROPBOX_SOURCE_PATH}/_REVISAR/{data_hoje}/{identificador}"
 
@@ -455,7 +460,7 @@ def processar_lote(lote):
     if aprovado:
         pasta_originais = f"{DROPBOX_SOURCE_PATH}/_PROCESSADOS/{data_hoje}/{identificador}"
     else:
-        pasta_originais = pasta_lote  # em _REVISAR fica tudo junto (fotos editadas + originais), pra facilitar a revisao manual
+        pasta_originais = f"{pasta_lote}/_ORIGINAIS"  # fica dentro do lote, mas separado das fotos editadas
 
     # --- Edita e sobe TODAS as fotos, aprovado ou nao ---
     bruto = dbx_baixar(capa["path_lower"])
