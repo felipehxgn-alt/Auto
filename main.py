@@ -464,90 +464,115 @@ def _carregar_fonte(tamanho):
     return ImageFont.load_default()
 
 
-def aplicar_selo_original(canvas_rgba, caixa_bytes_original):
-    """So na foto de CAPA: cola uma miniatura da foto real da caixa +
-    faixa 'PRODUTO ORIGINAL' por baixo, no canto inferior direito
-    (oposto ao logo, que fica no superior esquerdo)."""
+COR_HEXAGON = (17, 85, 165, 255)  # azul da marca - ajustar se tiver o hex exato da Hexagon
+
+
+def _desenhar_texto_curvo(canvas_rgba, texto, centro, raio, fonte, cor):
+    """Desenha texto acompanhando o arco superior de um circulo -
+    tecnica classica de 'carimbo redondo': cada letra e desenhada
+    numa mini-imagem separada, rotacionada no angulo certo e colada
+    na posicao correspondente do circulo."""
+    import math
     from PIL import ImageDraw
 
-    tam_thumb = int(canvas_rgba.width * LOGO_MAX_RATIO)
-    faixa_altura = int(tam_thumb * 0.28)
-
-    caixa_img = Image.open(io.BytesIO(caixa_bytes_original)).convert("RGB")
-    lado = min(caixa_img.width, caixa_img.height)
-    esquerda = (caixa_img.width - lado) // 2
-    topo = (caixa_img.height - lado) // 2
-    caixa_img = caixa_img.crop((esquerda, topo, esquerda + lado, topo + lado))
-    caixa_img = caixa_img.resize((tam_thumb, tam_thumb), Image.LANCZOS)
-
-    selo = Image.new("RGBA", (tam_thumb, tam_thumb + faixa_altura), (255, 255, 255, 255))
-    selo.paste(caixa_img, (0, 0))
-
-    draw = ImageDraw.Draw(selo)
-    draw.rectangle([0, tam_thumb, tam_thumb, tam_thumb + faixa_altura], fill=(20, 20, 20, 255))
-    fonte = _carregar_fonte(max(10, int(faixa_altura * 0.45)))
-    texto = "PRODUTO ORIGINAL"
-    bbox = draw.textbbox((0, 0), texto, font=fonte)
-    texto_w, texto_h = bbox[2] - bbox[0], bbox[3] - bbox[1]
-    if texto_w > tam_thumb * 0.95:
-        # texto nao coube na largura do thumb - encolhe a fonte proporcionalmente
-        fonte = _carregar_fonte(max(8, int(faixa_altura * 0.45 * (tam_thumb * 0.95 / texto_w))))
-        bbox = draw.textbbox((0, 0), texto, font=fonte)
-        texto_w, texto_h = bbox[2] - bbox[0], bbox[3] - bbox[1]
-    pos_texto = ((tam_thumb - texto_w) // 2, tam_thumb + (faixa_altura - texto_h) // 2 - bbox[1])
-    draw.text(pos_texto, texto, fill=(255, 255, 255, 255), font=fonte)
-
-    # borda branca fina ao redor de tudo, pra destacar do fundo do produto
-    borda = 4
-    selo_com_borda = Image.new("RGBA", (selo.width + borda * 2, selo.height + borda * 2), (255, 255, 255, 255))
-    selo_com_borda.paste(selo, (borda, borda))
-
-    margem = int(canvas_rgba.width * LOGO_MARGEM_RATIO)
-    pos = (canvas_rgba.width - selo_com_borda.width - margem, canvas_rgba.height - selo_com_borda.height - margem)
-    canvas_rgba.paste(selo_com_borda, pos, selo_com_borda)
-    return canvas_rgba
-
-
-def aplicar_selo_garantia(canvas_rgba):
-    """So na foto de CAPA: faixa 'GARANTIA 90 DIAS DE FABRICA' no canto
-    inferior esquerdo - so texto, sem miniatura, aproveitando o espaco
-    em branco que sobra nesse canto."""
-    from PIL import ImageDraw
-
-    largura_max = int(canvas_rgba.width * (LOGO_MAX_RATIO + 0.05))
-    altura_faixa = int(canvas_rgba.width * LOGO_MAX_RATIO * 0.28)
-
-    fonte = _carregar_fonte(max(10, int(altura_faixa * 0.42)))
-    texto = "GARANTIA 90 DIAS\nDE FABRICA"
+    cx, cy = centro
     draw_temp = ImageDraw.Draw(Image.new("RGB", (10, 10)))
-    bbox = draw_temp.multiline_textbbox((0, 0), texto, font=fonte, align="center")
+    larguras = []
+    for ch in texto:
+        bbox = draw_temp.textbbox((0, 0), ch, font=fonte)
+        larguras.append(max(bbox[2] - bbox[0], 4) + 3)
+    largura_total_px = sum(larguras)
+    angulo_total = largura_total_px / raio
+    angulo_atual = -angulo_total / 2
+
+    for ch, larg in zip(texto, larguras):
+        angulo_char = angulo_atual + (larg / raio) / 2
+        ang_rad = angulo_char - math.pi / 2
+        x = cx + raio * math.cos(ang_rad)
+        y = cy + raio * math.sin(ang_rad)
+
+        tam_tmp = 70
+        char_img = Image.new("RGBA", (tam_tmp, tam_tmp), (0, 0, 0, 0))
+        d = ImageDraw.Draw(char_img)
+        d.text((tam_tmp / 2, tam_tmp / 2), ch, font=fonte, fill=cor, anchor="mm")
+        rotacao_graus = -math.degrees(angulo_char)
+        char_rotado = char_img.rotate(rotacao_graus, resample=Image.BICUBIC, center=(tam_tmp / 2, tam_tmp / 2))
+        canvas_rgba.paste(char_rotado, (int(x - tam_tmp / 2), int(y - tam_tmp / 2)), char_rotado)
+        angulo_atual += larg / raio
+
+
+def _criar_selo_redondo(tamanho, texto_arco, texto_central, icone_hexagon_bytes):
+    """Monta um carimbo redondo: anel duplo azul Hexagon, texto curvo
+    no arco superior, texto grande central, e o icone H da Hexagon
+    (se disponivel) abaixo do texto central."""
+    from PIL import ImageDraw
+
+    selo = Image.new("RGBA", (tamanho, tamanho), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(selo)
+    centro = (tamanho // 2, tamanho // 2)
+    borda_externa = max(3, int(tamanho * 0.022))
+
+    draw.ellipse([borda_externa, borda_externa, tamanho - borda_externa, tamanho - borda_externa],
+                 outline=COR_HEXAGON, width=max(2, int(tamanho * 0.022)))
+    draw.ellipse([int(tamanho * 0.05), int(tamanho * 0.05), tamanho - int(tamanho * 0.05), tamanho - int(tamanho * 0.05)],
+                 outline=COR_HEXAGON, width=max(1, int(tamanho * 0.007)))
+
+    fonte_arco = _carregar_fonte(max(9, int(tamanho * 0.065)))
+    _desenhar_texto_curvo(selo, texto_arco, centro, int(tamanho * 0.38), fonte_arco, COR_HEXAGON)
+
+    icone_h = None
+    if icone_hexagon_bytes:
+        try:
+            icone_h = Image.open(io.BytesIO(icone_hexagon_bytes)).convert("RGBA")
+            tam_icone = int(tamanho * 0.22)
+            icone_h.thumbnail((tam_icone, tam_icone), Image.LANCZOS)
+        except Exception:
+            icone_h = None
+
+    fonte_central = _carregar_fonte(max(16, int(tamanho * 0.13)))
+    bbox = draw.textbbox((0, 0), texto_central, font=fonte_central)
     texto_w, texto_h = bbox[2] - bbox[0], bbox[3] - bbox[1]
 
-    padding = int(altura_faixa * 0.18)
-    largura_selo = min(largura_max, texto_w + padding * 2)
-    altura_selo = texto_h + padding * 2
+    if icone_h:
+        y_icone = int(tamanho * 0.30)
+        selo.paste(icone_h, (centro[0] - icone_h.width // 2, y_icone), icone_h)
+        y_texto = y_icone + icone_h.height + int(tamanho * 0.03)
+    else:
+        y_texto = int(tamanho * 0.42)
 
-    selo = Image.new("RGBA", (largura_selo, altura_selo), (20, 20, 20, 255))
-    draw = ImageDraw.Draw(selo)
-    pos_texto = ((largura_selo - texto_w) // 2 - bbox[0], (altura_selo - texto_h) // 2 - bbox[1])
-    draw.multiline_text(pos_texto, texto, fill=(255, 255, 255, 255), font=fonte, align="center")
+    draw.text((centro[0] - texto_w / 2 - bbox[0], y_texto - bbox[1]), texto_central, font=fonte_central, fill=COR_HEXAGON)
+    return selo
 
-    borda = 4
-    selo_com_borda = Image.new("RGBA", (selo.width + borda * 2, selo.height + borda * 2), (255, 255, 255, 255))
-    selo_com_borda.paste(selo, (borda, borda))
 
+def aplicar_selo_original(canvas_rgba, icone_hexagon_bytes):
+    """So na foto de CAPA: carimbo redondo 'PRODUTO ORIGINAL' + icone H
+    da Hexagon, no canto inferior direito (oposto ao logo)."""
+    tamanho = int(canvas_rgba.width * LOGO_MAX_RATIO * 1.15)
+    selo = _criar_selo_redondo(tamanho, "PRODUTO ORIGINAL", "100%", icone_hexagon_bytes)
     margem = int(canvas_rgba.width * LOGO_MARGEM_RATIO)
-    pos = (margem, canvas_rgba.height - selo_com_borda.height - margem)
-    canvas_rgba.paste(selo_com_borda, pos, selo_com_borda)
+    pos = (canvas_rgba.width - tamanho - margem, canvas_rgba.height - tamanho - margem)
+    canvas_rgba.paste(selo, pos, selo)
     return canvas_rgba
 
 
-def editar_produto(bytes_brutos, logo_bytes, selo_caixa_bytes=None):
+def aplicar_selo_garantia(canvas_rgba, icone_hexagon_bytes):
+    """So na foto de CAPA: carimbo redondo 'GARANTIA DE FABRICA' + icone
+    H da Hexagon, no canto inferior esquerdo."""
+    tamanho = int(canvas_rgba.width * LOGO_MAX_RATIO * 1.15)
+    selo = _criar_selo_redondo(tamanho, "GARANTIA DE FABRICA", "90 DIAS", icone_hexagon_bytes)
+    margem = int(canvas_rgba.width * LOGO_MARGEM_RATIO)
+    pos = (margem, canvas_rgba.height - tamanho - margem)
+    canvas_rgba.paste(selo, pos, selo)
+    return canvas_rgba
+
+
+def editar_produto(bytes_brutos, logo_bytes, aplicar_selos=False, icone_hexagon_bytes=None):
     """Remove fundo + monta no canvas. Se a remocao de fundo (rembg)
     falhar, a foto continua indo com fundo original (evita perder a
     foto), mas registra o erro completo no log pra facilitar
-    diagnostico. selo_caixa_bytes: se informado (so na capa), cola o
-    selo 'PRODUTO ORIGINAL' com miniatura da caixa."""
+    diagnostico. aplicar_selos=True (so na capa): cola os 2 selos
+    redondos (Produto Original + Garantia de Fabrica), com o icone H
+    da Hexagon se disponivel (senao os selos saem so com texto)."""
     try:
         sem_fundo = remover_fundo(bytes_brutos)
     except Exception as e:
@@ -556,9 +581,9 @@ def editar_produto(bytes_brutos, logo_bytes, selo_caixa_bytes=None):
         traceback.print_exc()
         sem_fundo = bytes_brutos
     canvas = compor_produto_em_canvas(sem_fundo, logo_bytes)
-    if selo_caixa_bytes:
-        canvas = aplicar_selo_original(canvas, selo_caixa_bytes)
-        canvas = aplicar_selo_garantia(canvas)
+    if aplicar_selos:
+        canvas = aplicar_selo_original(canvas, icone_hexagon_bytes)
+        canvas = aplicar_selo_garantia(canvas, icone_hexagon_bytes)
     return imagem_para_jpg_bytes(canvas)
 
 
@@ -727,10 +752,12 @@ def processar_lote(lote):
                 return
         dbx_subir(f"{pasta_lote}/{nome_arquivo}", bytes_editados)
 
+    icone_hexagon_bytes = _buscar_logo_em(DROPBOX_LOGOS_HEXAGON_PATH, "HEXAGON LOGO")
+
     bruto = dbx_baixar(capa["path_lower"])
     subir_foto_produto(
         f"{identificador}_Capa.jpg",
-        editar_produto(bruto, logo_bytes, selo_caixa_bytes=caixa_bytes_original),
+        editar_produto(bruto, logo_bytes, aplicar_selos=True, icone_hexagon_bytes=icone_hexagon_bytes),
     )
 
     for i, arq in enumerate(angulos, start=2):
@@ -747,7 +774,7 @@ def processar_lote(lote):
     # marca que vendemos, exceto ELRING (que tem tratamento proprio) ---
     if aprovado and marca and marca.strip().upper() != "ELRING":
         entrega_bytes = _buscar_logo_em(DROPBOX_LOGOS_HEXAGON_PATH, "ENTREGA HEXAGON")
-        logo_hex_bytes = _buscar_logo_em(DROPBOX_LOGOS_HEXAGON_PATH, "HEXAGON LOGO")
+        logo_hex_bytes = icone_hexagon_bytes
         if entrega_bytes:
             img = Image.open(io.BytesIO(entrega_bytes)).convert("RGB")
             buf = io.BytesIO(); img.save(buf, format="JPEG", quality=95)
