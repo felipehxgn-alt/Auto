@@ -502,6 +502,25 @@ def _desenhar_texto_curvo(canvas_rgba, texto, centro, raio, fonte, cor):
         angulo_atual += larg / raio
 
 
+def _desenhar_icone_h(tamanho, cor):
+    """Desenha um icone H simples, no mesmo estilo vetorial de linha
+    fina do resto do selo - substitui a busca de arquivo no Dropbox
+    pra garantir que a cor SEMPRE bate com o tema do selo (azul ou
+    vermelho), sem risco de ficar espremido ou destoando."""
+    from PIL import ImageDraw
+
+    img = Image.new("RGBA", (tamanho, tamanho), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(img)
+    largura_linha = max(2, int(tamanho * 0.14))
+    w, h = tamanho, tamanho
+
+    # duas pernas verticais + travessa horizontal (letra H)
+    draw.line([(w * 0.22, h * 0.12), (w * 0.22, h * 0.88)], fill=cor, width=largura_linha)
+    draw.line([(w * 0.78, h * 0.12), (w * 0.78, h * 0.88)], fill=cor, width=largura_linha)
+    draw.line([(w * 0.22, h * 0.5), (w * 0.78, h * 0.5)], fill=cor, width=largura_linha)
+    return img
+
+
 def _desenhar_icone_escudo_check(tamanho, cor):
     """Desenha um icone de escudo com check dentro, no mesmo estilo
     vetorial de linha fina usado no resto do selo - usado na Garantia
@@ -565,19 +584,12 @@ def _criar_selo_redondo(tamanho, texto_arco, texto_central, icone_img, cor):
     return selo
 
 
-def aplicar_selo_original(canvas_rgba, icone_hexagon_bytes, cor):
+def aplicar_selo_original(canvas_rgba, cor):
     """So na foto de CAPA: carimbo redondo 'PRODUTO ORIGINAL' + icone H
-    da Hexagon, no canto inferior direito (oposto ao logo). Cor varia
-    por marca (azul Hexagon, vermelho ELRING)."""
+    desenhado (nao mais buscado do Dropbox - garante cor sempre igual
+    ao tema do selo), no canto inferior direito (oposto ao logo)."""
     tamanho = int(canvas_rgba.width * LOGO_MAX_RATIO * 1.15)
-    icone_h = None
-    if icone_hexagon_bytes:
-        try:
-            icone_h = Image.open(io.BytesIO(icone_hexagon_bytes)).convert("RGBA")
-            tam_icone = int(tamanho * 0.22)
-            icone_h.thumbnail((tam_icone, tam_icone), Image.LANCZOS)
-        except Exception:
-            icone_h = None
+    icone_h = _desenhar_icone_h(int(tamanho * 0.20), cor)
     selo = _criar_selo_redondo(tamanho, "PRODUTO ORIGINAL", "100%", icone_h, cor)
     margem = int(canvas_rgba.width * LOGO_MARGEM_RATIO)
     pos = (canvas_rgba.width - tamanho - margem, canvas_rgba.height - tamanho - margem)
@@ -585,7 +597,7 @@ def aplicar_selo_original(canvas_rgba, icone_hexagon_bytes, cor):
     return canvas_rgba
 
 
-def aplicar_selo_garantia(canvas_rgba, icone_hexagon_bytes, cor):
+def aplicar_selo_garantia(canvas_rgba, cor):
     """So na foto de CAPA: carimbo redondo 'GARANTIA DE FABRICA' + icone
     de escudo+check (nao repete o H, ja usado no selo Original), no
     canto inferior esquerdo. Cor varia por marca."""
@@ -598,13 +610,13 @@ def aplicar_selo_garantia(canvas_rgba, icone_hexagon_bytes, cor):
     return canvas_rgba
 
 
-def editar_produto(bytes_brutos, logo_bytes, aplicar_selos=False, icone_hexagon_bytes=None, cor_selo=COR_HEXAGON):
+def editar_produto(bytes_brutos, logo_bytes, aplicar_selos=False, cor_selo=COR_HEXAGON):
     """Remove fundo + monta no canvas. Se a remocao de fundo (rembg)
     falhar, a foto continua indo com fundo original (evita perder a
     foto), mas registra o erro completo no log pra facilitar
     diagnostico. aplicar_selos=True (so na capa): cola os 2 selos
-    redondos (Produto Original + Garantia de Fabrica), com o icone H
-    da Hexagon se disponivel (senao os selos saem so com texto).
+    redondos (Produto Original + Garantia de Fabrica), com icone H
+    desenhado na mesma cor do selo (nao busca mais arquivo externo).
     cor_selo: azul Hexagon por padrao, vermelho pra produtos ELRING."""
     try:
         sem_fundo = remover_fundo(bytes_brutos)
@@ -615,8 +627,8 @@ def editar_produto(bytes_brutos, logo_bytes, aplicar_selos=False, icone_hexagon_
         sem_fundo = bytes_brutos
     canvas = compor_produto_em_canvas(sem_fundo, logo_bytes)
     if aplicar_selos:
-        canvas = aplicar_selo_original(canvas, icone_hexagon_bytes, cor_selo)
-        canvas = aplicar_selo_garantia(canvas, icone_hexagon_bytes, cor_selo)
+        canvas = aplicar_selo_original(canvas, cor_selo)
+        canvas = aplicar_selo_garantia(canvas, cor_selo)
     return imagem_para_jpg_bytes(canvas)
 
 
@@ -785,13 +797,13 @@ def processar_lote(lote):
                 return
         dbx_subir(f"{pasta_lote}/{nome_arquivo}", bytes_editados)
 
-    icone_hexagon_bytes = _buscar_logo_em(DROPBOX_LOGOS_HEXAGON_PATH, "HEXAGON LOGO")
+    icone_hexagon_bytes = _buscar_logo_em(DROPBOX_LOGOS_HEXAGON_PATH, "HEXAGON LOGO")  # usado so no banner final da galeria, nao mais no selo
     cor_selo = COR_ELRING if (marca and marca.strip().upper() == "ELRING") else COR_HEXAGON
 
     bruto = dbx_baixar(capa["path_lower"])
     subir_foto_produto(
         f"{identificador}_Capa.jpg",
-        editar_produto(bruto, logo_bytes, aplicar_selos=True, icone_hexagon_bytes=icone_hexagon_bytes, cor_selo=cor_selo),
+        editar_produto(bruto, logo_bytes, aplicar_selos=True, cor_selo=cor_selo),
     )
 
     for i, arq in enumerate(angulos, start=2):
