@@ -136,9 +136,9 @@ GMAIL_APP_PASSWORD = os.environ.get("GMAIL_APP_PASSWORD")
 ALERT_EMAIL_TO = os.environ.get("ALERT_EMAIL_TO", "felipehxgn@gmail.com")
 
 CANVAS_SIZE = 1200
-MARGEM_RATIO = 0.15
-LOGO_WIDTH_RATIO = 0.15
-LOGO_MARGEM_RATIO = 0.15
+MARGEM_RATIO = 0.05
+LOGO_MAX_RATIO = 0.18  # caixa maxima (largura E altura) que o logo pode ocupar - nunca estica alem disso, seja qual for o formato do logo original
+LOGO_MARGEM_RATIO = 0.05
 LOTE_INCOMPLETO_MINUTOS = 10
 
 VIDEO_EXTS = (".mp4", ".mov")
@@ -263,8 +263,11 @@ def dbx_buscar_logo(marca):
 # OPENAI - LEITURA DE SKU E MARCA NA FOTO DA CAIXA
 # ============================================================
 def identificar_sku_marca(imagem_bytes):
-    """Retorna (sku_ou_None, marca_ou_None, confiante:bool). Nunca
-    inventa valor - se o modelo nao tiver certeza, confiante=False."""
+    """Retorna (sku_ou_None, marca_ou_None, confiante:bool,
+    rotacao_graus:int). rotacao_graus e quantos graus (sentido
+    horario) a foto precisa girar pra ficar reta - 0, 90, 180 ou 270.
+    Nunca inventa sku/marca - se o modelo nao tiver certeza,
+    confiante=False."""
     img_b64 = base64.b64encode(imagem_bytes).decode("utf-8")
     payload = {
         "model": "gpt-4o-mini",
@@ -276,12 +279,17 @@ def identificar_sku_marca(imagem_bytes):
                         "type": "text",
                         "text": (
                             "Esta e uma foto de uma caixa de autopeca. Leia o "
-                            "codigo SKU e o nome da MARCA impressos na caixa. "
+                            "codigo SKU e o nome da MARCA impressos na caixa, "
+                            "mesmo que a foto esteja de lado ou de cabeca pra "
+                            "baixo. Tambem diga quantos graus, no sentido "
+                            "horario, a foto precisa girar pra o texto ficar "
+                            "na posicao normal de leitura (0, 90, 180 ou 270). "
                             "Responda SOMENTE em JSON no formato "
-                            '{"sku": "...", "marca": "...", "confiante": true/false} '
-                            "sem nenhum texto adicional. Se nao conseguir ler algo, "
-                            'use null nesse campo. "confiante" deve ser false se o '
-                            "texto estiver ilegivel, cortado ou ambiguo."
+                            '{"sku": "...", "marca": "...", "confiante": true/false, '
+                            '"rotacao": 0} sem nenhum texto adicional. Se nao '
+                            'conseguir ler algo, use null nesse campo. '
+                            '"confiante" deve ser false se o texto estiver '
+                            "ilegivel, cortado ou ambiguo."
                         ),
                     },
                     {
@@ -310,15 +318,29 @@ def identificar_sku_marca(imagem_bytes):
         sku = (dados.get("sku") or "").strip() or None
         marca = (dados.get("marca") or "").strip() or None
         confiante = bool(dados.get("confiante", False)) and sku and marca
-        return sku, marca, confiante
+        rotacao = dados.get("rotacao", 0) or 0
+        rotacao = rotacao if rotacao in (0, 90, 180, 270) else 0
+        return sku, marca, confiante, rotacao
     except Exception as e:
         print(f"Falha lendo SKU/marca na caixa: {repr(e)}")
-        return None, None, False
+        return None, None, False, 0
 
 
 # ============================================================
 # REMOCAO DE FUNDO (rembg - biblioteca gratuita, roda local, sem API paga)
 # ============================================================
+def corrigir_rotacao(imagem_bytes, graus_horario):
+    """Gira a foto pra ficar reta, se a IA detectou que ela esta de
+    lado/cabeca pra baixo. graus_horario: 0, 90, 180 ou 270."""
+    if not graus_horario:
+        return imagem_bytes
+    img = Image.open(io.BytesIO(imagem_bytes))
+    img = img.convert("RGB").rotate(-graus_horario, expand=True)
+    buf = io.BytesIO()
+    img.save(buf, format="JPEG", quality=95)
+    return buf.getvalue()
+
+
 def remover_fundo(imagem_bytes):
     from rembg import remove as rembg_remove
     return rembg_remove(imagem_bytes)
@@ -327,6 +349,26 @@ def remover_fundo(imagem_bytes):
 # ============================================================
 # PIL - COMPOSICAO DA IMAGEM FINAL
 # ============================================================
+def _retangulo_logo(canvas_size, logo_bytes):
+    """Calcula o retangulo (x1,y1,x2,y2) que o logo vai ocupar no canto
+    superior esquerdo, sem precisar abrir/colar de verdade - usado so
+    pra checar sobreposicao com a peca antes de decidir o tamanho dela."""
+    logo = Image.open(io.BytesIO(logo_bytes)).convert("RGBA")
+    caixa_max = int(canvas_size * LOGO_MAX_RATIO)
+    escala = min(caixa_max / logo.width, caixa_max / logo.height)
+    largura, altura = int(logo.width * escala), int(logo.height * escala)
+    margem = int(canvas_size * LOGO_MARGEM_RATIO)
+    return (margem, margem, margem + largura, margem + altura)
+
+
+def _area_sobreposicao(retangulo_a, retangulo_b):
+    ax1, ay1, ax2, ay2 = retangulo_a
+    bx1, by1, bx2, by2 = retangulo_b
+    largura_i = max(0, min(ax2, bx2) - max(ax1, bx1))
+    altura_i = max(0, min(ay2, by2) - max(ay1, by1))
+    return largura_i * altura_i
+
+
 def compor_produto_em_canvas(imagem_bytes_sem_fundo, logo_bytes):
     produto = Image.open(io.BytesIO(imagem_bytes_sem_fundo)).convert("RGBA")
     bbox = produto.getbbox()
@@ -334,6 +376,21 @@ def compor_produto_em_canvas(imagem_bytes_sem_fundo, logo_bytes):
         produto = produto.crop(bbox)
 
     area_util = CANVAS_SIZE * (1 - 2 * MARGEM_RATIO)
+
+    # se a peca for cobrir demais o canto do logo, encolhe um pouco so
+    # nesse caso - assim o logo continua aparecendo, sem precisar de
+    # efeito de "atras/flutuando" que nao escala bem pra milhares de fotos
+    if logo_bytes:
+        escala_normal = min(area_util / produto.width, area_util / produto.height)
+        w_normal, h_normal = produto.width * escala_normal, produto.height * escala_normal
+        pos_normal = ((CANVAS_SIZE - w_normal) / 2, (CANVAS_SIZE - h_normal) / 2)
+        rect_produto = (pos_normal[0], pos_normal[1], pos_normal[0] + w_normal, pos_normal[1] + h_normal)
+        rect_logo = _retangulo_logo(CANVAS_SIZE, logo_bytes)
+        area_logo = (rect_logo[2] - rect_logo[0]) * (rect_logo[3] - rect_logo[1])
+        cobertura = _area_sobreposicao(rect_produto, rect_logo) / area_logo if area_logo else 0
+        if cobertura > 0.35:
+            area_util = area_util * 0.85  # encolhe ~15% so quando realmente cobre demais o logo
+
     escala = min(area_util / produto.width, area_util / produto.height)
     novo_w, novo_h = int(produto.width * escala), int(produto.height * escala)
     produto = produto.resize((novo_w, novo_h), Image.LANCZOS)
@@ -350,9 +407,14 @@ def compor_produto_em_canvas(imagem_bytes_sem_fundo, logo_bytes):
 
 def colar_logo(canvas_rgba, logo_bytes):
     logo = Image.open(io.BytesIO(logo_bytes)).convert("RGBA")
-    largura_alvo = int(canvas_rgba.width * LOGO_WIDTH_RATIO)
-    escala = largura_alvo / logo.width
-    logo = logo.resize((largura_alvo, int(logo.height * escala)), Image.LANCZOS)
+
+    # caixa maxima padronizada: nenhum logo, seja largo, quadrado ou
+    # vertical, ultrapassa essa dimensao - garante tamanho visual
+    # consistente entre marcas diferentes
+    caixa_max = int(canvas_rgba.width * LOGO_MAX_RATIO)
+    escala = min(caixa_max / logo.width, caixa_max / logo.height)
+    novo_w, novo_h = int(logo.width * escala), int(logo.height * escala)
+    logo = logo.resize((novo_w, novo_h), Image.LANCZOS)
 
     margem = int(canvas_rgba.width * LOGO_MARGEM_RATIO)
     pos = (margem, margem)
@@ -368,11 +430,73 @@ def imagem_para_jpg_bytes(imagem_rgba):
     return buf.getvalue()
 
 
-def editar_produto(bytes_brutos, logo_bytes):
+def _carregar_fonte(tamanho):
+    """Tenta carregar uma fonte bonita (DejaVu Bold, comum em runners
+    Linux); se nao achar, usa a fonte padrao do PIL (mais feia, mas
+    nunca quebra)."""
+    from PIL import ImageFont
+    caminhos_possiveis = [
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+        "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf",
+    ]
+    for caminho in caminhos_possiveis:
+        try:
+            return ImageFont.truetype(caminho, tamanho)
+        except Exception:
+            continue
+    return ImageFont.load_default()
+
+
+def aplicar_selo_original(canvas_rgba, caixa_bytes_original):
+    """So na foto de CAPA: cola uma miniatura da foto real da caixa +
+    faixa 'PRODUTO ORIGINAL' por baixo, no canto inferior direito
+    (oposto ao logo, que fica no superior esquerdo)."""
+    from PIL import ImageDraw
+
+    tam_thumb = int(canvas_rgba.width * LOGO_MAX_RATIO)
+    faixa_altura = int(tam_thumb * 0.28)
+
+    caixa_img = Image.open(io.BytesIO(caixa_bytes_original)).convert("RGB")
+    lado = min(caixa_img.width, caixa_img.height)
+    esquerda = (caixa_img.width - lado) // 2
+    topo = (caixa_img.height - lado) // 2
+    caixa_img = caixa_img.crop((esquerda, topo, esquerda + lado, topo + lado))
+    caixa_img = caixa_img.resize((tam_thumb, tam_thumb), Image.LANCZOS)
+
+    selo = Image.new("RGBA", (tam_thumb, tam_thumb + faixa_altura), (255, 255, 255, 255))
+    selo.paste(caixa_img, (0, 0))
+
+    draw = ImageDraw.Draw(selo)
+    draw.rectangle([0, tam_thumb, tam_thumb, tam_thumb + faixa_altura], fill=(20, 20, 20, 255))
+    fonte = _carregar_fonte(max(10, int(faixa_altura * 0.45)))
+    texto = "PRODUTO ORIGINAL"
+    bbox = draw.textbbox((0, 0), texto, font=fonte)
+    texto_w, texto_h = bbox[2] - bbox[0], bbox[3] - bbox[1]
+    if texto_w > tam_thumb * 0.95:
+        # texto nao coube na largura do thumb - encolhe a fonte proporcionalmente
+        fonte = _carregar_fonte(max(8, int(faixa_altura * 0.45 * (tam_thumb * 0.95 / texto_w))))
+        bbox = draw.textbbox((0, 0), texto, font=fonte)
+        texto_w, texto_h = bbox[2] - bbox[0], bbox[3] - bbox[1]
+    pos_texto = ((tam_thumb - texto_w) // 2, tam_thumb + (faixa_altura - texto_h) // 2 - bbox[1])
+    draw.text(pos_texto, texto, fill=(255, 255, 255, 255), font=fonte)
+
+    # borda branca fina ao redor de tudo, pra destacar do fundo do produto
+    borda = 4
+    selo_com_borda = Image.new("RGBA", (selo.width + borda * 2, selo.height + borda * 2), (255, 255, 255, 255))
+    selo_com_borda.paste(selo, (borda, borda))
+
+    margem = int(canvas_rgba.width * LOGO_MARGEM_RATIO)
+    pos = (canvas_rgba.width - selo_com_borda.width - margem, canvas_rgba.height - selo_com_borda.height - margem)
+    canvas_rgba.paste(selo_com_borda, pos, selo_com_borda)
+    return canvas_rgba
+
+
+def editar_produto(bytes_brutos, logo_bytes, selo_caixa_bytes=None):
     """Remove fundo + monta no canvas. Se a remocao de fundo (rembg)
     falhar, a foto continua indo com fundo original (evita perder a
     foto), mas registra o erro completo no log pra facilitar
-    diagnostico."""
+    diagnostico. selo_caixa_bytes: se informado (so na capa), cola o
+    selo 'PRODUTO ORIGINAL' com miniatura da caixa."""
     try:
         sem_fundo = remover_fundo(bytes_brutos)
     except Exception as e:
@@ -381,6 +505,8 @@ def editar_produto(bytes_brutos, logo_bytes):
         traceback.print_exc()
         sem_fundo = bytes_brutos
     canvas = compor_produto_em_canvas(sem_fundo, logo_bytes)
+    if selo_caixa_bytes:
+        canvas = aplicar_selo_original(canvas, selo_caixa_bytes)
     return imagem_para_jpg_bytes(canvas)
 
 
@@ -447,7 +573,10 @@ def processar_lote(lote):
     video = lote[-1]
 
     caixa_bytes_original = dbx_baixar(caixa["path_lower"])
-    sku, marca, confiante = identificar_sku_marca(caixa_bytes_original)
+    sku, marca, confiante, rotacao = identificar_sku_marca(caixa_bytes_original)
+    if rotacao:
+        caixa_bytes_original = corrigir_rotacao(caixa_bytes_original, rotacao)
+        print(f"Foto da caixa girada {rotacao} graus pra ficar reta")
 
     timestamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%d_%H%M%S")
     data_hoje = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d")
@@ -468,7 +597,10 @@ def processar_lote(lote):
 
     # --- Edita e sobe TODAS as fotos, aprovado ou nao ---
     bruto = dbx_baixar(capa["path_lower"])
-    dbx_subir(f"{pasta_lote}/{identificador}_Capa.jpg", editar_produto(bruto, logo_bytes))
+    dbx_subir(
+        f"{pasta_lote}/{identificador}_Capa.jpg",
+        editar_produto(bruto, logo_bytes, selo_caixa_bytes=caixa_bytes_original),
+    )
 
     for i, arq in enumerate(angulos, start=2):
         bruto = dbx_baixar(arq["path_lower"])
