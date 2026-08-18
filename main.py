@@ -306,12 +306,16 @@ def _buscar_selo_real(nome_arquivo, tamanho):
 # ============================================================
 # OPENAI - LEITURA DE SKU E MARCA NA FOTO DA CAIXA
 # ============================================================
-def identificar_sku_marca(imagem_bytes):
+def identificar_sku_marca(imagem_bytes, tentativa=1):
     """Retorna (sku_ou_None, marca_ou_None, confiante:bool,
     rotacao_graus:int). rotacao_graus e quantos graus (sentido
     horario) a foto precisa girar pra ficar reta - 0, 90, 180 ou 270.
     Nunca inventa sku/marca - se o modelo nao tiver certeza,
-    confiante=False."""
+    confiante=False.
+
+    tentativa: so usado pro texto do log (1a ou 2a leitura), nao afeta
+    o comportamento - serve pra rastrear no log do GitHub Actions qual
+    chamada e qual, sem precisar adivinhar pela ordem das linhas."""
     img_b64 = base64.b64encode(imagem_bytes).decode("utf-8")
     payload = {
         "model": "gpt-4o-mini",
@@ -358,15 +362,23 @@ def identificar_sku_marca(imagem_bytes):
         resp.raise_for_status()
         texto = resp.json()["choices"][0]["message"]["content"].strip()
         texto = texto.replace("```json", "").replace("```", "").strip()
+        # log cru da resposta do modelo, SEMPRE (nao so quando falha) -
+        # e o unico jeito de diferenciar "modelo achou o texto ilegivel"
+        # de "modelo respondeu algo que nao bateu com o formato esperado"
+        print(f"Leitura da caixa (tentativa {tentativa}) - resposta bruta da IA: {texto}")
         dados = json.loads(texto)
         sku = (dados.get("sku") or "").strip() or None
         marca = (dados.get("marca") or "").strip() or None
         confiante = bool(dados.get("confiante", False)) and sku and marca
         rotacao = dados.get("rotacao", 0) or 0
         rotacao = rotacao if rotacao in (0, 90, 180, 270) else 0
+        print(
+            f"Leitura da caixa (tentativa {tentativa}) - interpretado: "
+            f"sku={sku!r} marca={marca!r} confiante={confiante} rotacao_detectada={rotacao}"
+        )
         return sku, marca, confiante, rotacao
     except Exception as e:
-        print(f"Falha lendo SKU/marca na caixa: {repr(e)}")
+        print(f"Falha lendo SKU/marca na caixa (tentativa {tentativa}): {repr(e)}")
         return None, None, False, 0
 
 
@@ -958,17 +970,21 @@ def processar_lote(lote):
     video = lote[-1]
 
     caixa_bytes_original = dbx_baixar(caixa["path_lower"])
-    sku, marca, confiante, rotacao = identificar_sku_marca(caixa_bytes_original)
+    sku, marca, confiante, rotacao = identificar_sku_marca(caixa_bytes_original, tentativa=1)
     if rotacao:
         caixa_bytes_original = corrigir_rotacao(caixa_bytes_original, rotacao)
         print(f"Foto da caixa girada {rotacao} graus pra ficar reta")
         if not confiante:
             # a 1a leitura pode ter falhado justamente por causa da foto
             # estar de lado - tenta ler de novo agora que esta reta
-            sku2, marca2, confiante2, rotacao2 = identificar_sku_marca(caixa_bytes_original)
+            sku2, marca2, confiante2, rotacao2 = identificar_sku_marca(caixa_bytes_original, tentativa=2)
             if confiante2:
                 sku, marca, confiante = sku2, marca2, confiante2
                 print("SKU/marca lidos com sucesso na 2a tentativa, apos corrigir a rotacao")
+            else:
+                print("2a tentativa (apos rotacionar) tambem ficou sem confianca - segue pra revisao manual")
+    else:
+        print("IA nao detectou necessidade de rotacao (rotacao_detectada=0) nessa foto da caixa")
 
     timestamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%d_%H%M%S")
     identificador = sku or f"LOTE_{timestamp}"
