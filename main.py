@@ -375,11 +375,28 @@ def identificar_sku_marca(imagem_bytes):
 # ============================================================
 def corrigir_rotacao(imagem_bytes, graus_horario):
     """Gira a foto pra ficar reta, se a IA detectou que ela esta de
-    lado/cabeca pra baixo. graus_horario: 0, 90, 180 ou 270."""
+    lado/cabeca pra baixo. graus_horario: 0, 90, 180 ou 270.
+    Usa transpose() em vez de rotate() - pra angulos retos (multiplos
+    de 90), transpose e uma reorganizacao exata de pixels (sem
+    interpolacao), entao a imagem sai tao nitida quanto a original.
+    rotate() usa reamostragem mesmo em angulos retos e borra o
+    resultado (foi o que causou texto/numeros borrados antes)."""
     if not graus_horario:
         return imagem_bytes
-    img = Image.open(io.BytesIO(imagem_bytes))
-    img = img.convert("RGB").rotate(-graus_horario, expand=True)
+    img = Image.open(io.BytesIO(imagem_bytes)).convert("RGB")
+    # rotate(-graus_horario) = giro no sentido horario por graus_horario.
+    # Image.ROTATE_90/180/270 giram a imagem no sentido ANTI-horario,
+    # entao pra girar N graus no sentido horario usamos (360-N) aqui.
+    mapa_transpose = {
+        90: Image.ROTATE_270,
+        180: Image.ROTATE_180,
+        270: Image.ROTATE_90,
+    }
+    metodo = mapa_transpose.get(graus_horario)
+    if metodo is not None:
+        img = img.transpose(metodo)
+    else:
+        img = img.rotate(-graus_horario, expand=True, resample=Image.BICUBIC)
     buf = io.BytesIO()
     img.save(buf, format="JPEG", quality=95)
     return buf.getvalue()
@@ -639,13 +656,13 @@ def aplicar_selo_garantia(canvas_rgba, cor):
 
 def aplicar_selo_confianca_real(canvas_rgba):
     """So na foto de CAPA, produtos NAO-ELRING: cola o selo de
-    Confianca real (arquivo 'LOGO H' em LOGOS HEXAGON, enviado pelo
+    Confianca real (arquivo 'SELO QUALIDADE' em LOGOS HEXAGON, enviado pelo
     usuario), no mesmo canto (inferior direito) que o selo desenhado
     ocupava antes."""
     tamanho = int(canvas_rgba.width * LOGO_MAX_RATIO * 1.15)
-    selo = _buscar_selo_real("LOGO H", tamanho)
+    selo = _buscar_selo_real("SELO QUALIDADE", tamanho)
     if not selo:
-        print("AVISO: selo 'LOGO H' nao encontrado em LOGOS HEXAGON - pulando selo de confianca")
+        print("AVISO: selo 'SELO QUALIDADE' nao encontrado em LOGOS HEXAGON - pulando selo de confianca")
         return canvas_rgba
     margem = int(canvas_rgba.width * LOGO_MARGEM_RATIO)
     pos = (canvas_rgba.width - selo.width - margem, canvas_rgba.height - selo.height - margem)
@@ -678,7 +695,7 @@ def editar_produto(bytes_brutos, logo_bytes, aplicar_selos=False, cor_selo=COR_H
     o selo DESENHADO no codigo (identidade visual propria da ELRING,
     tratada a parte). Todo o resto (Hexagon e demais marcas
     revendidas) usa os selos REAIS enviados pelo usuario (arquivos
-    'LOGO H' = Confianca e 'SELO GARANTIA' = Garantia, em LOGOS
+    'SELO QUALIDADE' = Confianca e 'SELO GARANTIA' = Garantia, em LOGOS
     HEXAGON), com fundo removido via rembg antes de colar.
     cor_selo: azul Hexagon por padrao, vermelho pra produtos ELRING."""
     try:
@@ -755,6 +772,129 @@ def checar_lote_pendente(lote_pendente):
 # ============================================================
 # PROCESSAMENTO DE UM LOTE
 # ============================================================
+def detectar_regiao_mao(imagem_bytes):
+    """Pergunta pra IA de visao se tem mao/dedo na foto e, se tiver,
+    em que regiao aproximada (retangulo normalizado 0-1). Retorna
+    None se nao tiver mao, ou (x, y, largura, altura) normalizados
+    (0 a 1, origem no canto superior esquerdo) se tiver."""
+    img_b64 = base64.b64encode(imagem_bytes).decode("utf-8")
+    payload = {
+        "model": "gpt-4o-mini",
+        "messages": [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "text",
+                        "text": (
+                            "Esta e uma foto de produto (fundo branco). Existe "
+                            "mao, dedo ou pessoa segurando a peca na foto? Se "
+                            "existir, de a caixa retangular aproximada que "
+                            "cobre a mao/dedo (com uma margem de folga), em "
+                            "coordenadas normalizadas de 0 a 1 (origem no "
+                            "canto superior esquerdo). Responda SOMENTE em "
+                            'JSON: {"tem_mao": true/false, "x": 0.0, '
+                            '"y": 0.0, "largura": 0.0, "altura": 0.0} '
+                            "sem texto adicional. Se tem_mao for false, os "
+                            "outros campos podem ser 0."
+                        ),
+                    },
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": f"data:image/jpeg;base64,{img_b64}"},
+                    },
+                ],
+            }
+        ],
+        "max_tokens": 150,
+    }
+    try:
+        resp = requests.post(
+            "https://api.openai.com/v1/chat/completions",
+            headers={
+                "Authorization": f"Bearer {OPENAI_API_KEY}",
+                "Content-Type": "application/json",
+            },
+            json=payload,
+            timeout=30,
+        )
+        resp.raise_for_status()
+        texto = resp.json()["choices"][0]["message"]["content"].strip()
+        texto = texto.strip("`").replace("json\n", "").strip()
+        dados = json.loads(texto)
+        if not dados.get("tem_mao"):
+            return None
+        x = max(0.0, min(1.0, float(dados.get("x", 0))))
+        y = max(0.0, min(1.0, float(dados.get("y", 0))))
+        w = max(0.0, min(1.0 - x, float(dados.get("largura", 0.3))))
+        h = max(0.0, min(1.0 - y, float(dados.get("altura", 0.3))))
+        return (x, y, w, h)
+    except Exception as e:
+        print(f"Deteccao de regiao da mao falhou (nao bloqueia): {repr(e)}")
+        return None
+
+
+def remover_mao_com_ia(imagem_bytes, regiao):
+    """Usa a API de edicao de imagem da OpenAI (gpt-image-1, mascara
+    de inpainting) pra apagar a mao/dedo da regiao detectada e
+    preencher de forma realista (fundo branco ou continuacao da
+    peca, conforme o caso). imagem_bytes: foto ja editada (canvas
+    1200x1200, fundo branco). regiao: (x, y, largura, altura)
+    normalizados de 0 a 1, vindos de detectar_regiao_mao()."""
+    img = Image.open(io.BytesIO(imagem_bytes)).convert("RGB")
+    tam_original = img.size
+    tam_api = (1024, 1024)
+    img_api = img.resize(tam_api, Image.LANCZOS)
+
+    x, y, w, h = regiao
+    margem = 0.03  # folga extra em volta da area detectada
+    px = max(0, int((x - margem) * tam_api[0]))
+    py = max(0, int((y - margem) * tam_api[1]))
+    pw = min(tam_api[0] - px, int((w + 2 * margem) * tam_api[0]))
+    ph = min(tam_api[1] - py, int((h + 2 * margem) * tam_api[1]))
+
+    # mascara: opaco = preserva, transparente = area que a IA reescreve
+    mascara = Image.new("RGBA", tam_api, (255, 255, 255, 255))
+    area_editavel = Image.new("RGBA", (pw, ph), (0, 0, 0, 0))
+    mascara.paste(area_editavel, (px, py))
+
+    buf_img = io.BytesIO()
+    img_api.save(buf_img, format="PNG")
+    buf_img.seek(0)
+    buf_mask = io.BytesIO()
+    mascara.save(buf_mask, format="PNG")
+    buf_mask.seek(0)
+
+    resp = requests.post(
+        "https://api.openai.com/v1/images/edits",
+        headers={"Authorization": f"Bearer {OPENAI_API_KEY}"},
+        files={
+            "image": ("imagem.png", buf_img, "image/png"),
+            "mask": ("mascara.png", buf_mask, "image/png"),
+        },
+        data={
+            "model": "gpt-image-1",
+            "prompt": (
+                "Remove a mao/dedo dessa area da foto de produto. "
+                "Preencha com fundo branco liso identico ao resto da "
+                "foto; se a mao estiver cobrindo parte da peca, "
+                "complete o formato/textura da peca de forma realista "
+                "e coerente com o resto dela. Nao adicione nenhum "
+                "objeto ou elemento novo, nao altere o resto da foto."
+            ),
+            "size": "1024x1024",
+        },
+        timeout=90,
+    )
+    resp.raise_for_status()
+    b64_resultado = resp.json()["data"][0]["b64_json"]
+    img_resultado = Image.open(io.BytesIO(base64.b64decode(b64_resultado))).convert("RGB")
+    img_resultado = img_resultado.resize(tam_original, Image.LANCZOS)
+    buf_final = io.BytesIO()
+    img_resultado.save(buf_final, format="JPEG", quality=95)
+    return buf_final.getvalue()
+
+
 def verificar_qualidade_foto(imagem_editada_bytes):
     """Usa a mesma IA de visao pra checar se a foto (ja editada) tem
     algum problema obvio: mao/dedo segurando a peca, ou coisa clara
@@ -822,6 +962,13 @@ def processar_lote(lote):
     if rotacao:
         caixa_bytes_original = corrigir_rotacao(caixa_bytes_original, rotacao)
         print(f"Foto da caixa girada {rotacao} graus pra ficar reta")
+        if not confiante:
+            # a 1a leitura pode ter falhado justamente por causa da foto
+            # estar de lado - tenta ler de novo agora que esta reta
+            sku2, marca2, confiante2, rotacao2 = identificar_sku_marca(caixa_bytes_original)
+            if confiante2:
+                sku, marca, confiante = sku2, marca2, confiante2
+                print("SKU/marca lidos com sucesso na 2a tentativa, apos corrigir a rotacao")
 
     timestamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%d_%H%M%S")
     identificador = sku or f"LOTE_{timestamp}"
@@ -853,15 +1000,26 @@ def processar_lote(lote):
     fotos_com_problema = []
 
     def subir_foto_produto(nome_arquivo, bytes_editados):
-        """Se o lote foi aprovado, checa qualidade individual da foto -
-        problema (ex: mao na foto) manda so essa foto pra _VERIFICAR,
-        sem afetar as outras fotos boas do mesmo lote."""
+        """Se o lote foi aprovado, checa se tem mao/dedo na foto. Se
+        tiver, TENTA remover automaticamente via IA (inpainting) antes
+        de desistir - so cai em _VERIFICAR se a remocao falhar ou o
+        resultado ainda mostrar problema. Isso evita que praticamente
+        toda foto (peca segurada na mao na hora de fotografar) va
+        parar em revisao manual."""
         if aprovado:
-            ok, motivo = verificar_qualidade_foto(bytes_editados)
-            if not ok:
-                fotos_com_problema.append((nome_arquivo, motivo))
-                dbx_subir(f"{pasta_lote}/_VERIFICAR/{nome_arquivo}", bytes_editados)
-                return
+            regiao_mao = detectar_regiao_mao(bytes_editados)
+            if regiao_mao:
+                try:
+                    bytes_editados = remover_mao_com_ia(bytes_editados, regiao_mao)
+                    print(f"{nome_arquivo}: mao detectada e removida automaticamente")
+                except Exception as e:
+                    print(f"{nome_arquivo}: remocao automatica da mao falhou: {repr(e)}")
+                # confere se realmente sumiu (ou se o resultado ficou ruim)
+                ok, motivo = verificar_qualidade_foto(bytes_editados)
+                if not ok:
+                    fotos_com_problema.append((nome_arquivo, motivo))
+                    dbx_subir(f"{pasta_lote}/_VERIFICAR/{nome_arquivo}", bytes_editados)
+                    return
         dbx_subir(f"{pasta_lote}/{nome_arquivo}", bytes_editados)
 
     icone_hexagon_bytes = _buscar_logo_em(DROPBOX_LOGOS_HEXAGON_PATH, "HEXAGON LOGO")  # usado so no banner final da galeria, nao mais no selo
