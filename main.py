@@ -338,10 +338,19 @@ def identificar_sku_marca(imagem_bytes, tentativa=1):
                             "o unico texto identificavel for um pais de "
                             "origem (sem nome de fabricante em lugar nenhum), "
                             "retorne marca=null e confiante=false. Tambem diga "
-                            "quantos graus, no sentido horario, a foto precisa "
-                            "girar pra o texto ficar na posicao normal de "
-                            "leitura (0, 90, 180 ou 270). Responda SOMENTE em "
-                            "JSON no formato "
+                            "quantos graus, no sentido horario, a FOTO (nao o "
+                            "texto) precisa fisicamente girar pra ficar reta - "
+                            "com o texto na horizontal, de pe, como se "
+                            "estivesse sendo lido num livro. IMPORTANTE: "
+                            "informe a rotacao real da foto mesmo que voce "
+                            "consiga ler o texto perfeitamente do jeito que "
+                            "esta - sua capacidade de ler texto de lado nao "
+                            "significa que a foto esta reta. rotacao=0 e SO "
+                            "pra fotos onde o texto ja esta na horizontal, sem "
+                            "nenhuma inclinacao de lado ou de cabeca pra baixo. "
+                            "Se o texto estiver na vertical (de lado), SEMPRE "
+                            "retorne 90, 180 ou 270, nunca 0. Responda SOMENTE "
+                            "em JSON no formato "
                             '{"sku": "...", "marca": "...", "confiante": true/false, '
                             '"rotacao": 0} sem nenhum texto adicional. Se nao '
                             'conseguir ler algo, use null nesse campo. '
