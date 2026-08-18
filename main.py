@@ -276,6 +276,33 @@ def dbx_buscar_logo(marca):
     return _buscar_logo_em(DROPBOX_LOGOS_PATH, alvo)
 
 
+_cache_selos_reais = {}
+
+
+def _buscar_selo_real(nome_arquivo, tamanho):
+    """Busca um selo real (imagem propria enviada pelo usuario, ex:
+    Confianca/Garantia) em LOGOS HEXAGON, remove o fundo (rembg - as
+    imagens originais tem fundo branco solido, nao transparente) e
+    redimensiona pra caber no tamanho do selo. Cacheia em memoria por
+    nome de arquivo, ja que e o mesmo selo repetido em todo o lote."""
+    if nome_arquivo in _cache_selos_reais:
+        bruto = _cache_selos_reais[nome_arquivo]
+    else:
+        bruto = _buscar_logo_em(DROPBOX_LOGOS_HEXAGON_PATH, nome_arquivo)
+        _cache_selos_reais[nome_arquivo] = bruto
+    if not bruto:
+        return None
+    try:
+        sem_fundo = remover_fundo(bruto)
+    except Exception as e:
+        print(f"Remocao de fundo do selo '{nome_arquivo}' falhou, usando original: {repr(e)}")
+        sem_fundo = bruto
+    img = Image.open(io.BytesIO(sem_fundo)).convert("RGBA")
+    escala = min(tamanho / img.width, tamanho / img.height)
+    novo_tam = (max(1, int(img.width * escala)), max(1, int(img.height * escala)))
+    return img.resize(novo_tam, Image.LANCZOS)
+
+
 # ============================================================
 # OPENAI - LEITURA DE SKU E MARCA NA FOTO DA CAIXA
 # ============================================================
@@ -610,13 +637,49 @@ def aplicar_selo_garantia(canvas_rgba, cor):
     return canvas_rgba
 
 
+def aplicar_selo_confianca_real(canvas_rgba):
+    """So na foto de CAPA, produtos NAO-ELRING: cola o selo de
+    Confianca real (arquivo 'LOGO H' em LOGOS HEXAGON, enviado pelo
+    usuario), no mesmo canto (inferior direito) que o selo desenhado
+    ocupava antes."""
+    tamanho = int(canvas_rgba.width * LOGO_MAX_RATIO * 1.15)
+    selo = _buscar_selo_real("LOGO H", tamanho)
+    if not selo:
+        print("AVISO: selo 'LOGO H' nao encontrado em LOGOS HEXAGON - pulando selo de confianca")
+        return canvas_rgba
+    margem = int(canvas_rgba.width * LOGO_MARGEM_RATIO)
+    pos = (canvas_rgba.width - selo.width - margem, canvas_rgba.height - selo.height - margem)
+    canvas_rgba.paste(selo, pos, selo)
+    return canvas_rgba
+
+
+def aplicar_selo_garantia_real(canvas_rgba):
+    """So na foto de CAPA, produtos NAO-ELRING: cola o selo de
+    Garantia real (arquivo 'SELO GARANTIA' em LOGOS HEXAGON, enviado
+    pelo usuario), no mesmo canto (inferior esquerdo) que o selo
+    desenhado ocupava antes."""
+    tamanho = int(canvas_rgba.width * LOGO_MAX_RATIO * 1.15)
+    selo = _buscar_selo_real("SELO GARANTIA", tamanho)
+    if not selo:
+        print("AVISO: selo 'SELO GARANTIA' nao encontrado em LOGOS HEXAGON - pulando selo de garantia")
+        return canvas_rgba
+    margem = int(canvas_rgba.width * LOGO_MARGEM_RATIO)
+    pos = (margem, canvas_rgba.height - selo.height - margem)
+    canvas_rgba.paste(selo, pos, selo)
+    return canvas_rgba
+
+
 def editar_produto(bytes_brutos, logo_bytes, aplicar_selos=False, cor_selo=COR_HEXAGON):
     """Remove fundo + monta no canvas. Se a remocao de fundo (rembg)
     falhar, a foto continua indo com fundo original (evita perder a
     foto), mas registra o erro completo no log pra facilitar
     diagnostico. aplicar_selos=True (so na capa): cola os 2 selos
-    redondos (Produto Original + Garantia de Fabrica), com icone H
-    desenhado na mesma cor do selo (nao busca mais arquivo externo).
+    redondos. Produtos ELRING (cor_selo=COR_ELRING) continuam usando
+    o selo DESENHADO no codigo (identidade visual propria da ELRING,
+    tratada a parte). Todo o resto (Hexagon e demais marcas
+    revendidas) usa os selos REAIS enviados pelo usuario (arquivos
+    'LOGO H' = Confianca e 'SELO GARANTIA' = Garantia, em LOGOS
+    HEXAGON), com fundo removido via rembg antes de colar.
     cor_selo: azul Hexagon por padrao, vermelho pra produtos ELRING."""
     try:
         sem_fundo = remover_fundo(bytes_brutos)
@@ -627,8 +690,12 @@ def editar_produto(bytes_brutos, logo_bytes, aplicar_selos=False, cor_selo=COR_H
         sem_fundo = bytes_brutos
     canvas = compor_produto_em_canvas(sem_fundo, logo_bytes)
     if aplicar_selos:
-        canvas = aplicar_selo_original(canvas, cor_selo)
-        canvas = aplicar_selo_garantia(canvas, cor_selo)
+        if cor_selo == COR_ELRING:
+            canvas = aplicar_selo_original(canvas, cor_selo)
+            canvas = aplicar_selo_garantia(canvas, cor_selo)
+        else:
+            canvas = aplicar_selo_confianca_real(canvas)
+            canvas = aplicar_selo_garantia_real(canvas)
     return imagem_para_jpg_bytes(canvas)
 
 
