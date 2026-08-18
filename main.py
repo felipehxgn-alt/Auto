@@ -329,10 +329,19 @@ def identificar_sku_marca(imagem_bytes, tentativa=1):
                             "Esta e uma foto de uma caixa de autopeca. Leia o "
                             "codigo SKU e o nome da MARCA impressos na caixa, "
                             "mesmo que a foto esteja de lado ou de cabeca pra "
-                            "baixo. Tambem diga quantos graus, no sentido "
-                            "horario, a foto precisa girar pra o texto ficar "
-                            "na posicao normal de leitura (0, 90, 180 ou 270). "
-                            "Responda SOMENTE em JSON no formato "
+                            "baixo. IMPORTANTE: a MARCA e o nome do fabricante "
+                            "(ex: NGK, ELRING, BOSCH) - NUNCA um pais de "
+                            "origem. Palavras como 'JAPAN', 'MADE IN JAPAN', "
+                            "'CHINA', 'GERMANY' ou similares, mesmo gravadas "
+                            "em destaque na caixa ou na peca, NAO sao marca - "
+                            "ignore esse texto ao preencher o campo marca. Se "
+                            "o unico texto identificavel for um pais de "
+                            "origem (sem nome de fabricante em lugar nenhum), "
+                            "retorne marca=null e confiante=false. Tambem diga "
+                            "quantos graus, no sentido horario, a foto precisa "
+                            "girar pra o texto ficar na posicao normal de "
+                            "leitura (0, 90, 180 ou 270). Responda SOMENTE em "
+                            "JSON no formato "
                             '{"sku": "...", "marca": "...", "confiante": true/false, '
                             '"rotacao": 0} sem nenhum texto adicional. Se nao '
                             'conseguir ler algo, use null nesse campo. '
@@ -417,6 +426,30 @@ def corrigir_rotacao(imagem_bytes, graus_horario):
 def remover_fundo(imagem_bytes):
     from rembg import remove as rembg_remove
     return rembg_remove(imagem_bytes)
+
+
+def ler_caixa_com_retentativas(imagem_bytes, numero_tentativa_inicial):
+    """Tenta ler SKU/marca numa foto candidata a ser a caixa. Se a IA
+    detectar que precisa girar, aplica a rotacao e tenta ler de novo
+    (no maximo 2 chamadas). Retorna (sku, marca, confiante, bytes_finais)
+    - bytes_finais ja vem com a rotacao aplicada, mesmo se a leitura
+    nao ficou confiante (assim a foto pelo menos fica reta pra quem for
+    revisar manualmente)."""
+    sku, marca, confiante, rotacao = identificar_sku_marca(imagem_bytes, tentativa=numero_tentativa_inicial)
+    bytes_finais = imagem_bytes
+    if rotacao:
+        bytes_finais = corrigir_rotacao(imagem_bytes, rotacao)
+        print(f"Foto girada {rotacao} graus pra ficar reta")
+        if not confiante:
+            sku2, marca2, confiante2, _ = identificar_sku_marca(bytes_finais, tentativa=numero_tentativa_inicial + 1)
+            if confiante2:
+                sku, marca, confiante = sku2, marca2, confiante2
+                print("SKU/marca lidos com sucesso na 2a tentativa, apos corrigir a rotacao")
+            else:
+                print("2a tentativa (apos rotacionar) tambem ficou sem confianca")
+    else:
+        print("IA nao detectou necessidade de rotacao (rotacao_detectada=0) nessa foto")
+    return sku, marca, confiante, bytes_finais
 
 
 # ============================================================
@@ -964,27 +997,35 @@ def verificar_qualidade_foto(imagem_editada_bytes):
 
 
 def processar_lote(lote):
-    caixa = lote[0]
-    capa = lote[1]
+    caixa_arq = lote[0]
+    capa_arq = lote[1]
     angulos = lote[2:-1]
     video = lote[-1]
 
-    caixa_bytes_original = dbx_baixar(caixa["path_lower"])
-    sku, marca, confiante, rotacao = identificar_sku_marca(caixa_bytes_original, tentativa=1)
-    if rotacao:
-        caixa_bytes_original = corrigir_rotacao(caixa_bytes_original, rotacao)
-        print(f"Foto da caixa girada {rotacao} graus pra ficar reta")
-        if not confiante:
-            # a 1a leitura pode ter falhado justamente por causa da foto
-            # estar de lado - tenta ler de novo agora que esta reta
-            sku2, marca2, confiante2, rotacao2 = identificar_sku_marca(caixa_bytes_original, tentativa=2)
-            if confiante2:
-                sku, marca, confiante = sku2, marca2, confiante2
-                print("SKU/marca lidos com sucesso na 2a tentativa, apos corrigir a rotacao")
-            else:
-                print("2a tentativa (apos rotacionar) tambem ficou sem confianca - segue pra revisao manual")
-    else:
-        print("IA nao detectou necessidade de rotacao (rotacao_detectada=0) nessa foto da caixa")
+    caixa_bytes_bruto = dbx_baixar(caixa_arq["path_lower"])
+    sku, marca, confiante, caixa_bytes_original = ler_caixa_com_retentativas(caixa_bytes_bruto, 1)
+
+    # Se a posicao 1 nao deu certo, existe uma chance real de que a
+    # ORDEM DE CAPTURA tenha saido errada (erro recorrente: a 1a foto
+    # tirada foi do produto, nao da caixa de verdade - a caixa acabou
+    # em outra posicao do lote). Em vez de so desistir, testa se a
+    # posicao 2 (que a gente chamaria de "capa") e na verdade a caixa.
+    # So dispara esse fallback quando a 1a tentativa falhou - nao
+    # adiciona nenhuma chamada extra quando a ordem ja esta certa.
+    papeis_trocados = False
+    capa_bytes_bruto_alternativo = None
+    if not confiante:
+        print("Leitura da posicao 1 (caixa) sem confianca - testando se a posicao 2 (capa) e a caixa de verdade")
+        capa_bytes_bruto = dbx_baixar(capa_arq["path_lower"])
+        sku_c, marca_c, confiante_c, capa_bytes_rotacionado = ler_caixa_com_retentativas(capa_bytes_bruto, 3)
+        if confiante_c:
+            print("Ordem de captura invertida confirmada: a foto 2 e a caixa, a foto 1 e o produto - trocando os papeis")
+            sku, marca, confiante = sku_c, marca_c, confiante_c
+            caixa_bytes_original = capa_bytes_rotacionado
+            capa_bytes_bruto_alternativo = caixa_bytes_bruto  # a foto que era "caixa" (na verdade produto) vira a capa
+            papeis_trocados = True
+        else:
+            print("Posicao 2 tambem nao e uma caixa legivel - segue normal pra revisao manual")
 
     timestamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%d_%H%M%S")
     identificador = sku or f"LOTE_{timestamp}"
@@ -1041,7 +1082,10 @@ def processar_lote(lote):
     icone_hexagon_bytes = _buscar_logo_em(DROPBOX_LOGOS_HEXAGON_PATH, "HEXAGON LOGO")  # usado so no banner final da galeria, nao mais no selo
     cor_selo = COR_ELRING if (marca and marca.strip().upper() == "ELRING") else COR_HEXAGON
 
-    bruto = dbx_baixar(capa["path_lower"])
+    # se os papeis foram trocados (ordem de captura invertida), usa a
+    # foto que originalmente seria a "caixa" (na verdade o produto) como
+    # capa - senao, baixa a foto normal da posicao 2
+    bruto = capa_bytes_bruto_alternativo if papeis_trocados else dbx_baixar(capa_arq["path_lower"])
     subir_foto_produto(
         f"{identificador}_Capa.jpg",
         editar_produto(bruto, logo_bytes, aplicar_selos=True, cor_selo=cor_selo),
