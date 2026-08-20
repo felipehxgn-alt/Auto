@@ -683,9 +683,8 @@ def _criar_selo_redondo(tamanho, texto_arco, texto_central, icone_img, cor):
 
 
 def aplicar_selo_original(canvas_rgba, cor):
-    """So na foto de CAPA: carimbo redondo 'PRODUTO ORIGINAL' + icone H
-    desenhado (nao mais buscado do Dropbox - garante cor sempre igual
-    ao tema do selo), no canto inferior direito (oposto ao logo)."""
+    """RESERVADO PRA FOTO DEDICADA (montadoras) - nao usado mais na
+    capa. Carimbo redondo 'PRODUTO ORIGINAL' + icone H desenhado."""
     tamanho = int(canvas_rgba.width * LOGO_MAX_RATIO * 1.15)
     icone_h = _desenhar_icone_h(int(tamanho * 0.20), cor)
     selo = _criar_selo_redondo(tamanho, "PRODUTO ORIGINAL", "100%", icone_h, cor)
@@ -696,9 +695,8 @@ def aplicar_selo_original(canvas_rgba, cor):
 
 
 def aplicar_selo_garantia(canvas_rgba, cor):
-    """So na foto de CAPA: carimbo redondo 'GARANTIA DE FABRICA' + icone
-    de escudo+check (nao repete o H, ja usado no selo Original), no
-    canto inferior esquerdo. Cor varia por marca."""
+    """RESERVADO PRA FOTO DEDICADA (montadoras) - nao usado mais na
+    capa. Carimbo redondo 'GARANTIA DE FABRICA' + icone escudo+check."""
     tamanho = int(canvas_rgba.width * LOGO_MAX_RATIO * 1.15)
     icone_escudo = _desenhar_icone_escudo_check(int(tamanho * 0.22), cor)
     selo = _criar_selo_redondo(tamanho, "GARANTIA DE FABRICA", "90 DIAS", icone_escudo, cor)
@@ -709,10 +707,9 @@ def aplicar_selo_garantia(canvas_rgba, cor):
 
 
 def aplicar_selo_confianca_real(canvas_rgba):
-    """So na foto de CAPA, produtos NAO-ELRING: cola o selo de
-    Confianca real (arquivo 'SELO QUALIDADE' em LOGOS HEXAGON, enviado pelo
-    usuario), no mesmo canto (inferior direito) que o selo desenhado
-    ocupava antes."""
+    """RESERVADO PRA FOTO DEDICADA (montadoras) - nao usado mais na
+    capa. Cola o selo de Confianca real ('SELO QUALIDADE' em LOGOS
+    HEXAGON, enviado pelo usuario)."""
     tamanho = int(canvas_rgba.width * LOGO_MAX_RATIO * 1.15)
     selo = _buscar_selo_real("SELO QUALIDADE", tamanho)
     if not selo:
@@ -725,10 +722,9 @@ def aplicar_selo_confianca_real(canvas_rgba):
 
 
 def aplicar_selo_garantia_real(canvas_rgba):
-    """So na foto de CAPA, produtos NAO-ELRING: cola o selo de
-    Garantia real (arquivo 'SELO GARANTIA' em LOGOS HEXAGON, enviado
-    pelo usuario), no mesmo canto (inferior esquerdo) que o selo
-    desenhado ocupava antes."""
+    """RESERVADO PRA FOTO DEDICADA (montadoras) - nao usado mais na
+    capa. Cola o selo de Garantia real ('SELO GARANTIA' em LOGOS
+    HEXAGON, enviado pelo usuario)."""
     tamanho = int(canvas_rgba.width * LOGO_MAX_RATIO * 1.15)
     selo = _buscar_selo_real("SELO GARANTIA", tamanho)
     if not selo:
@@ -744,14 +740,14 @@ def editar_produto(bytes_brutos, logo_bytes, aplicar_selos=False, cor_selo=COR_H
     """Remove fundo + monta no canvas. Se a remocao de fundo (rembg)
     falhar, a foto continua indo com fundo original (evita perder a
     foto), mas registra o erro completo no log pra facilitar
-    diagnostico. aplicar_selos=True (so na capa): cola os 2 selos
-    redondos. Produtos ELRING (cor_selo=COR_ELRING) continuam usando
-    o selo DESENHADO no codigo (identidade visual propria da ELRING,
-    tratada a parte). Todo o resto (Hexagon e demais marcas
-    revendidas) usa os selos REAIS enviados pelo usuario (arquivos
-    'SELO QUALIDADE' = Confianca e 'SELO GARANTIA' = Garantia, em LOGOS
-    HEXAGON), com fundo removido via rembg antes de colar.
-    cor_selo: azul Hexagon por padrao, vermelho pra produtos ELRING."""
+    diagnostico.
+
+    aplicar_selos: MANTIDO no codigo por compatibilidade, mas a
+    chamada na foto de Capa (processar_lote) agora sempre passa False -
+    os 2 selos (Confianca/Garantia) saem da Capa e vao ser usados na
+    futura foto dedicada de montadoras/universal. Se True for passado
+    no futuro (na nova foto dedicada), a logica de selo ELRING
+    (desenhado) vs demais marcas (selo real) continua igual."""
     try:
         sem_fundo = remover_fundo(bytes_brutos)
     except Exception as e:
@@ -1095,9 +1091,11 @@ def processar_lote(lote):
     # foto que originalmente seria a "caixa" (na verdade o produto) como
     # capa - senao, baixa a foto normal da posicao 2
     bruto = capa_bytes_bruto_alternativo if papeis_trocados else dbx_baixar(capa_arq["path_lower"])
+    # NAO aplica mais os 2 selos (Confianca/Garantia) na Capa - eles vao
+    # ser usados na futura foto dedicada de montadoras/universal.
     subir_foto_produto(
         f"{identificador}_Capa.jpg",
-        editar_produto(bruto, logo_bytes, aplicar_selos=True, cor_selo=cor_selo),
+        editar_produto(bruto, logo_bytes, aplicar_selos=False, cor_selo=cor_selo),
     )
 
     for i, arq in enumerate(angulos, start=2):
