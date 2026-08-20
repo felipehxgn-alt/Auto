@@ -438,27 +438,17 @@ def remover_fundo(imagem_bytes):
 
 
 def ler_caixa_com_retentativas(imagem_bytes, numero_tentativa_inicial):
-    """Tenta ler SKU/marca numa foto candidata a ser a caixa. Se a IA
-    detectar que precisa girar, aplica a rotacao e tenta ler de novo
-    (no maximo 2 chamadas). Retorna (sku, marca, confiante, bytes_finais)
-    - bytes_finais ja vem com a rotacao aplicada, mesmo se a leitura
-    nao ficou confiante (assim a foto pelo menos fica reta pra quem for
-    revisar manualmente)."""
+    """Tenta ler SKU/marca numa foto candidata a ser a caixa.
+
+    ROTACAO AUTOMATICA DESATIVADA (20/08/2026) - girar a foto fisicamente
+    estava piorando o resultado. Agora so faz UMA leitura, sem tentar
+    corrigir/girar a imagem - a expectativa e que as fotos ja cheguem
+    retas (protocolo de captura). bytes_finais sempre igual a
+    imagem_bytes original, sem alteracao."""
     sku, marca, confiante, rotacao = identificar_sku_marca(imagem_bytes, tentativa=numero_tentativa_inicial)
-    bytes_finais = imagem_bytes
     if rotacao:
-        bytes_finais = corrigir_rotacao(imagem_bytes, rotacao)
-        print(f"Foto girada {rotacao} graus pra ficar reta")
-        if not confiante:
-            sku2, marca2, confiante2, _ = identificar_sku_marca(bytes_finais, tentativa=numero_tentativa_inicial + 1)
-            if confiante2:
-                sku, marca, confiante = sku2, marca2, confiante2
-                print("SKU/marca lidos com sucesso na 2a tentativa, apos corrigir a rotacao")
-            else:
-                print("2a tentativa (apos rotacionar) tambem ficou sem confianca")
-    else:
-        print("IA nao detectou necessidade de rotacao (rotacao_detectada=0) nessa foto")
-    return sku, marca, confiante, bytes_finais
+        print(f"IA detectou rotacao de {rotacao} graus, mas a correcao automatica esta desativada - foto mantida como veio")
+    return sku, marca, confiante, imagem_bytes
 
 
 # ============================================================
