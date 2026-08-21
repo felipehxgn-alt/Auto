@@ -1,25 +1,52 @@
 name: Robo de Midias
+
 on:
   schedule:
-    - cron: '*/5 * * * *'
-  workflow_dispatch:
+    - cron: "*/5 * * * *"
+  workflow_dispatch: {}
+
 jobs:
   processar-midias:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout repo
+      - name: Checkout do repositorio
         uses: actions/checkout@v4
-      - name: Setup Python
+
+      - name: Configurar Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.11'
-      - name: Install dependencies
+          python-version: "3.11"
+
+      - name: Instalar dependencias
         run: |
-          pip install requests Pillow rembg onnxruntime
-      - name: Run script
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Rodar robo de midias (fotos/video -> MIDIA_FINAL + Staging)
         env:
           DROPBOX_APP_KEY: ${{ secrets.DROPBOX_APP_KEY }}
           DROPBOX_APP_SECRET: ${{ secrets.DROPBOX_APP_SECRET }}
           DROPBOX_REFRESH_TOKEN: ${{ secrets.DROPBOX_REFRESH_TOKEN }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          PLANILHA_ANUNCIOS_ML_ID: ${{ secrets.PLANILHA_ANUNCIOS_ML_ID }}
+          DRIVE_VIDEOS_FOLDER_ID: ${{ secrets.DRIVE_VIDEOS_FOLDER_ID }}
+          GMAIL_USER: ${{ secrets.GMAIL_USER }}
+          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+          ALERT_EMAIL_TO: ${{ secrets.ALERT_EMAIL_TO }}
         run: python main.py
+
+      # -----------------------------------------------------------------
+      # Passo novo: promocao automatica Staging -> Principal.
+      # Roda em TODA execucao do cron (a cada 5 min), depois do robo de
+      # midias - assim qualquer linha marcada como "Completo" no Staging
+      # (por voce ou por mim no chat) e movida pra Principal sozinha, sem
+      # precisar acionar nada manualmente. Se nao houver nenhuma linha
+      # "Completo" no momento, o script so imprime "0 promovidas" e
+      # termina normal - nunca falha o workflow por falta de trabalho.
+      # -----------------------------------------------------------------
+      - name: Promover SKUs completos do Staging para a Principal
+        env:
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          PLANILHA_ANUNCIOS_ML_ID: ${{ secrets.PLANILHA_ANUNCIOS_ML_ID }}
+        run: python sheets_integration.py
