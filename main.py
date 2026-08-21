@@ -37,6 +37,8 @@ Segredos esperados (GitHub Secrets -> variaveis de ambiente):
   - nao expira, o script renova o access token sozinho a cada execucao)
   OU DROPBOX_ACCESS_TOKEN (modo antigo, expira em poucas horas)
   OPENAI_API_KEY
+  GOOGLE_SERVICE_ACCOUNT_JSON, PLANILHA_ANUNCIOS_ML_ID (integracao com a
+  planilha de anuncios - aba Staging)
 
 Remocao de fundo: usa a biblioteca gratuita "rembg" (roda local, sem
 API paga, sem chave). PHOTOROOM_API_KEY NAO e mais obrigatorio - so
@@ -70,6 +72,8 @@ from email.mime.text import MIMEText
 
 import requests
 from PIL import Image
+
+from sheets_integration import adicionar_ao_staging, STATUS_AGUARDANDO_PESQUISA, subir_video_drive
 
 # ============================================================
 # CONFIGURACOES
@@ -380,9 +384,6 @@ def identificar_sku_marca(imagem_bytes, tentativa=1):
         resp.raise_for_status()
         texto = resp.json()["choices"][0]["message"]["content"].strip()
         texto = texto.replace("```json", "").replace("```", "").strip()
-        # log cru da resposta do modelo, SEMPRE (nao so quando falha) -
-        # e o unico jeito de diferenciar "modelo achou o texto ilegivel"
-        # de "modelo respondeu algo que nao bateu com o formato esperado"
         print(f"Leitura da caixa (tentativa {tentativa}) - resposta bruta da IA: {texto}")
         dados = json.loads(texto)
         sku = (dados.get("sku") or "").strip() or None
@@ -404,19 +405,9 @@ def identificar_sku_marca(imagem_bytes, tentativa=1):
 # REMOCAO DE FUNDO (rembg - biblioteca gratuita, roda local, sem API paga)
 # ============================================================
 def corrigir_rotacao(imagem_bytes, graus_horario):
-    """Gira a foto pra ficar reta, se a IA detectou que ela esta de
-    lado/cabeca pra baixo. graus_horario: 0, 90, 180 ou 270.
-    Usa transpose() em vez de rotate() - pra angulos retos (multiplos
-    de 90), transpose e uma reorganizacao exata de pixels (sem
-    interpolacao), entao a imagem sai tao nitida quanto a original.
-    rotate() usa reamostragem mesmo em angulos retos e borra o
-    resultado (foi o que causou texto/numeros borrados antes)."""
     if not graus_horario:
         return imagem_bytes
     img = Image.open(io.BytesIO(imagem_bytes)).convert("RGB")
-    # rotate(-graus_horario) = giro no sentido horario por graus_horario.
-    # Image.ROTATE_90/180/270 giram a imagem no sentido ANTI-horario,
-    # entao pra girar N graus no sentido horario usamos (360-N) aqui.
     mapa_transpose = {
         90: Image.ROTATE_270,
         180: Image.ROTATE_180,
@@ -438,13 +429,6 @@ def remover_fundo(imagem_bytes):
 
 
 def ler_caixa_com_retentativas(imagem_bytes, numero_tentativa_inicial):
-    """Tenta ler SKU/marca numa foto candidata a ser a caixa.
-
-    ROTACAO AUTOMATICA DESATIVADA (20/08/2026) - girar a foto fisicamente
-    estava piorando o resultado. Agora so faz UMA leitura, sem tentar
-    corrigir/girar a imagem - a expectativa e que as fotos ja cheguem
-    retas (protocolo de captura). bytes_finais sempre igual a
-    imagem_bytes original, sem alteracao."""
     sku, marca, confiante, rotacao = identificar_sku_marca(imagem_bytes, tentativa=numero_tentativa_inicial)
     if rotacao:
         print(f"IA detectou rotacao de {rotacao} graus, mas a correcao automatica esta desativada - foto mantida como veio")
@@ -455,9 +439,6 @@ def ler_caixa_com_retentativas(imagem_bytes, numero_tentativa_inicial):
 # PIL - COMPOSICAO DA IMAGEM FINAL
 # ============================================================
 def _retangulo_logo(canvas_size, logo_bytes):
-    """Calcula o retangulo (x1,y1,x2,y2) que o logo vai ocupar no canto
-    superior esquerdo, sem precisar abrir/colar de verdade - usado so
-    pra checar sobreposicao com a peca antes de decidir o tamanho dela."""
     logo = Image.open(io.BytesIO(logo_bytes)).convert("RGBA")
     caixa_max = int(canvas_size * LOGO_MAX_RATIO)
     escala = min(caixa_max / logo.width, caixa_max / logo.height)
@@ -482,9 +463,6 @@ def compor_produto_em_canvas(imagem_bytes_sem_fundo, logo_bytes):
 
     area_util = CANVAS_SIZE * (1 - 2 * MARGEM_RATIO)
 
-    # se a peca for cobrir demais o canto do logo, encolhe um pouco so
-    # nesse caso - assim o logo continua aparecendo, sem precisar de
-    # efeito de "atras/flutuando" que nao escala bem pra milhares de fotos
     if logo_bytes:
         escala_normal = min(area_util / produto.width, area_util / produto.height)
         w_normal, h_normal = produto.width * escala_normal, produto.height * escala_normal
@@ -494,7 +472,7 @@ def compor_produto_em_canvas(imagem_bytes_sem_fundo, logo_bytes):
         area_logo = (rect_logo[2] - rect_logo[0]) * (rect_logo[3] - rect_logo[1])
         cobertura = _area_sobreposicao(rect_produto, rect_logo) / area_logo if area_logo else 0
         if cobertura > 0.35:
-            area_util = area_util * 0.85  # encolhe ~15% so quando realmente cobre demais o logo
+            area_util = area_util * 0.85
 
     escala = min(area_util / produto.width, area_util / produto.height)
     novo_w, novo_h = int(produto.width * escala), int(produto.height * escala)
@@ -512,15 +490,10 @@ def compor_produto_em_canvas(imagem_bytes_sem_fundo, logo_bytes):
 
 def colar_logo(canvas_rgba, logo_bytes):
     logo = Image.open(io.BytesIO(logo_bytes)).convert("RGBA")
-
-    # caixa maxima padronizada: nenhum logo, seja largo, quadrado ou
-    # vertical, ultrapassa essa dimensao - garante tamanho visual
-    # consistente entre marcas diferentes
     caixa_max = int(canvas_rgba.width * LOGO_MAX_RATIO)
     escala = min(caixa_max / logo.width, caixa_max / logo.height)
     novo_w, novo_h = int(logo.width * escala), int(logo.height * escala)
     logo = logo.resize((novo_w, novo_h), Image.LANCZOS)
-
     margem = int(canvas_rgba.width * LOGO_MARGEM_RATIO)
     pos = (margem, margem)
     canvas_rgba.paste(logo, pos, logo)
@@ -536,9 +509,6 @@ def imagem_para_jpg_bytes(imagem_rgba):
 
 
 def _carregar_fonte(tamanho):
-    """Tenta carregar uma fonte bonita (DejaVu Bold, comum em runners
-    Linux); se nao achar, usa a fonte padrao do PIL (mais feia, mas
-    nunca quebra)."""
     from PIL import ImageFont
     caminhos_possiveis = [
         "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
@@ -552,15 +522,11 @@ def _carregar_fonte(tamanho):
     return ImageFont.load_default()
 
 
-COR_HEXAGON = (17, 85, 165, 255)  # azul da marca Hexagon
-COR_ELRING = (196, 30, 30, 255)   # vermelho da marca ELRING
+COR_HEXAGON = (17, 85, 165, 255)
+COR_ELRING = (196, 30, 30, 255)
 
 
 def _desenhar_texto_curvo(canvas_rgba, texto, centro, raio, fonte, cor):
-    """Desenha texto acompanhando o arco superior de um circulo -
-    tecnica classica de 'carimbo redondo': cada letra e desenhada
-    numa mini-imagem separada, rotacionada no angulo certo e colada
-    na posicao correspondente do circulo."""
     import math
     from PIL import ImageDraw
 
@@ -591,10 +557,6 @@ def _desenhar_texto_curvo(canvas_rgba, texto, centro, raio, fonte, cor):
 
 
 def _desenhar_icone_h(tamanho, cor):
-    """Desenha um icone H simples, no mesmo estilo vetorial de linha
-    fina do resto do selo - substitui a busca de arquivo no Dropbox
-    pra garantir que a cor SEMPRE bate com o tema do selo (azul ou
-    vermelho), sem risco de ficar espremido ou destoando."""
     from PIL import ImageDraw
 
     img = Image.new("RGBA", (tamanho, tamanho), (0, 0, 0, 0))
@@ -602,7 +564,6 @@ def _desenhar_icone_h(tamanho, cor):
     largura_linha = max(2, int(tamanho * 0.14))
     w, h = tamanho, tamanho
 
-    # duas pernas verticais + travessa horizontal (letra H)
     draw.line([(w * 0.22, h * 0.12), (w * 0.22, h * 0.88)], fill=cor, width=largura_linha)
     draw.line([(w * 0.78, h * 0.12), (w * 0.78, h * 0.88)], fill=cor, width=largura_linha)
     draw.line([(w * 0.22, h * 0.5), (w * 0.78, h * 0.5)], fill=cor, width=largura_linha)
@@ -610,16 +571,12 @@ def _desenhar_icone_h(tamanho, cor):
 
 
 def _desenhar_icone_escudo_check(tamanho, cor):
-    """Desenha um icone de escudo com check dentro, no mesmo estilo
-    vetorial de linha fina usado no resto do selo - usado na Garantia
-    pra nao repetir o icone H duas vezes."""
     from PIL import ImageDraw
 
     img = Image.new("RGBA", (tamanho, tamanho), (0, 0, 0, 0))
     draw = ImageDraw.Draw(img)
     largura_linha = max(2, int(tamanho * 0.06))
 
-    # escudo: pentagono com base arredondada (ponta pra baixo)
     w, h = tamanho, tamanho
     pontos = [
         (w * 0.5, h * 0.04),
@@ -631,17 +588,12 @@ def _desenhar_icone_escudo_check(tamanho, cor):
     ]
     draw.line(pontos + [pontos[0]], fill=cor, width=largura_linha, joint="curve")
 
-    # check dentro do escudo
     check = [(w * 0.30, h * 0.48), (w * 0.45, h * 0.63), (w * 0.72, h * 0.32)]
     draw.line(check, fill=cor, width=largura_linha, joint="curve")
     return img
 
 
 def _criar_selo_redondo(tamanho, texto_arco, texto_central, icone_img, cor):
-    """Monta um carimbo redondo: anel duplo, texto curvo no arco
-    superior, texto grande central, e um icone (ja pronto, imagem PIL
-    RGBA) centralizado abaixo do texto central. Cor e parametro pra
-    poder variar por marca (ex: azul Hexagon, vermelho ELRING)."""
     from PIL import ImageDraw
 
     selo = Image.new("RGBA", (tamanho, tamanho), (0, 0, 0, 0))
@@ -673,8 +625,6 @@ def _criar_selo_redondo(tamanho, texto_arco, texto_central, icone_img, cor):
 
 
 def aplicar_selo_original(canvas_rgba, cor):
-    """RESERVADO PRA FOTO DEDICADA (montadoras) - nao usado mais na
-    capa. Carimbo redondo 'PRODUTO ORIGINAL' + icone H desenhado."""
     tamanho = int(canvas_rgba.width * LOGO_MAX_RATIO * 1.15)
     icone_h = _desenhar_icone_h(int(tamanho * 0.20), cor)
     selo = _criar_selo_redondo(tamanho, "PRODUTO ORIGINAL", "100%", icone_h, cor)
@@ -685,8 +635,6 @@ def aplicar_selo_original(canvas_rgba, cor):
 
 
 def aplicar_selo_garantia(canvas_rgba, cor):
-    """RESERVADO PRA FOTO DEDICADA (montadoras) - nao usado mais na
-    capa. Carimbo redondo 'GARANTIA DE FABRICA' + icone escudo+check."""
     tamanho = int(canvas_rgba.width * LOGO_MAX_RATIO * 1.15)
     icone_escudo = _desenhar_icone_escudo_check(int(tamanho * 0.22), cor)
     selo = _criar_selo_redondo(tamanho, "GARANTIA DE FABRICA", "90 DIAS", icone_escudo, cor)
@@ -697,9 +645,6 @@ def aplicar_selo_garantia(canvas_rgba, cor):
 
 
 def aplicar_selo_confianca_real(canvas_rgba):
-    """RESERVADO PRA FOTO DEDICADA (montadoras) - nao usado mais na
-    capa. Cola o selo de Confianca real ('SELO QUALIDADE' em LOGOS
-    HEXAGON, enviado pelo usuario)."""
     tamanho = int(canvas_rgba.width * LOGO_MAX_RATIO * 1.15)
     selo = _buscar_selo_real("SELO QUALIDADE", tamanho)
     if not selo:
@@ -712,9 +657,6 @@ def aplicar_selo_confianca_real(canvas_rgba):
 
 
 def aplicar_selo_garantia_real(canvas_rgba):
-    """RESERVADO PRA FOTO DEDICADA (montadoras) - nao usado mais na
-    capa. Cola o selo de Garantia real ('SELO GARANTIA' em LOGOS
-    HEXAGON, enviado pelo usuario)."""
     tamanho = int(canvas_rgba.width * LOGO_MAX_RATIO * 1.15)
     selo = _buscar_selo_real("SELO GARANTIA", tamanho)
     if not selo:
@@ -727,17 +669,6 @@ def aplicar_selo_garantia_real(canvas_rgba):
 
 
 def editar_produto(bytes_brutos, logo_bytes, aplicar_selos=False, cor_selo=COR_HEXAGON):
-    """Remove fundo + monta no canvas. Se a remocao de fundo (rembg)
-    falhar, a foto continua indo com fundo original (evita perder a
-    foto), mas registra o erro completo no log pra facilitar
-    diagnostico.
-
-    aplicar_selos: MANTIDO no codigo por compatibilidade, mas a
-    chamada na foto de Capa (processar_lote) agora sempre passa False -
-    os 2 selos (Confianca/Garantia) saem da Capa e vao ser usados na
-    futura foto dedicada de montadoras/universal. Se True for passado
-    no futuro (na nova foto dedicada), a logica de selo ELRING
-    (desenhado) vs demais marcas (selo real) continua igual."""
     try:
         sem_fundo = remover_fundo(bytes_brutos)
     except Exception as e:
@@ -813,10 +744,6 @@ def checar_lote_pendente(lote_pendente):
 # PROCESSAMENTO DE UM LOTE
 # ============================================================
 def detectar_regiao_mao(imagem_bytes):
-    """Pergunta pra IA de visao se tem mao/dedo na foto e, se tiver,
-    em que regiao aproximada (retangulo normalizado 0-1). Retorna
-    None se nao tiver mao, ou (x, y, largura, altura) normalizados
-    (0 a 1, origem no canto superior esquerdo) se tiver."""
     img_b64 = base64.b64encode(imagem_bytes).decode("utf-8")
     payload = {
         "model": "gpt-4o-mini",
@@ -875,25 +802,18 @@ def detectar_regiao_mao(imagem_bytes):
 
 
 def remover_mao_com_ia(imagem_bytes, regiao):
-    """Usa a API de edicao de imagem da OpenAI (gpt-image-1, mascara
-    de inpainting) pra apagar a mao/dedo da regiao detectada e
-    preencher de forma realista (fundo branco ou continuacao da
-    peca, conforme o caso). imagem_bytes: foto ja editada (canvas
-    1200x1200, fundo branco). regiao: (x, y, largura, altura)
-    normalizados de 0 a 1, vindos de detectar_regiao_mao()."""
     img = Image.open(io.BytesIO(imagem_bytes)).convert("RGB")
     tam_original = img.size
     tam_api = (1024, 1024)
     img_api = img.resize(tam_api, Image.LANCZOS)
 
     x, y, w, h = regiao
-    margem = 0.03  # folga extra em volta da area detectada
+    margem = 0.03
     px = max(0, int((x - margem) * tam_api[0]))
     py = max(0, int((y - margem) * tam_api[1]))
     pw = min(tam_api[0] - px, int((w + 2 * margem) * tam_api[0]))
     ph = min(tam_api[1] - py, int((h + 2 * margem) * tam_api[1]))
 
-    # mascara: opaco = preserva, transparente = area que a IA reescreve
     mascara = Image.new("RGBA", tam_api, (255, 255, 255, 255))
     area_editavel = Image.new("RGBA", (pw, ph), (0, 0, 0, 0))
     mascara.paste(area_editavel, (px, py))
@@ -936,11 +856,6 @@ def remover_mao_com_ia(imagem_bytes, regiao):
 
 
 def verificar_qualidade_foto(imagem_editada_bytes):
-    """Usa a mesma IA de visao pra checar se a foto (ja editada) tem
-    algum problema obvio: mao/dedo segurando a peca, ou coisa clara
-    demais errada no enquadramento. Retorna (ok:bool, motivo:str).
-    Em caso de erro tecnico, assume ok=True (nao bloqueia por causa de
-    falha da checagem em si - so bloqueia por problema real)."""
     img_b64 = base64.b64encode(imagem_editada_bytes).decode("utf-8")
     payload = {
         "model": "gpt-4o-mini",
@@ -991,6 +906,45 @@ def verificar_qualidade_foto(imagem_editada_bytes):
         return True, ""
 
 
+def registrar_no_staging(sku, marca, pasta_lote):
+    """Grava o SKU aprovado na aba Staging da planilha de anuncios,
+    pra a pesquisa de dados poder comecar. NUNCA deve derrubar o
+    processamento do lote - se a planilha falhar por qualquer motivo
+    (credencial, rede, etc.), so registra o erro e segue o robo
+    normalmente; a midia ja foi publicada com sucesso de qualquer
+    forma."""
+    try:
+        adicionar_ao_staging(
+            sku=sku,
+            marca=marca or "",
+            caminho_midia=pasta_lote,
+            status=STATUS_AGUARDANDO_PESQUISA,
+        )
+    except Exception as e:
+        print(f"AVISO: falha ao registrar SKU {sku} no Staging da planilha (nao bloqueia o lote): {repr(e)}")
+        enviar_alerta(
+            "Robo de Midias - falha ao registrar no Staging",
+            f"SKU {sku} foi publicado normalmente em {pasta_lote}, mas nao entrou "
+            f"na aba Staging da planilha. Erro: {repr(e)}",
+        )
+
+
+def enviar_video_para_drive(sku, video_bytes):
+    """Sobe uma copia do video pro Google Drive (pasta de backup em
+    hexagontakes@gmail.com), nomeada so com o SKU. Igual ao registro no
+    Staging, NUNCA bloqueia o processamento do lote - o video ja esta
+    salvo no Dropbox de qualquer forma, isso e so um backup extra."""
+    try:
+        subir_video_drive(sku, video_bytes)
+    except Exception as e:
+        print(f"AVISO: falha ao subir video do SKU {sku} pro Drive (nao bloqueia o lote): {repr(e)}")
+        enviar_alerta(
+            "Robo de Midias - falha no backup de video pro Drive",
+            f"SKU {sku}: video ja esta salvo no Dropbox normalmente, mas o backup "
+            f"pro Google Drive falhou. Erro: {repr(e)}",
+        )
+
+
 def processar_lote(lote):
     caixa_arq = lote[0]
     capa_arq = lote[1]
@@ -1000,13 +954,6 @@ def processar_lote(lote):
     caixa_bytes_bruto = dbx_baixar(caixa_arq["path_lower"])
     sku, marca, confiante, caixa_bytes_original = ler_caixa_com_retentativas(caixa_bytes_bruto, 1)
 
-    # Se a posicao 1 nao deu certo, existe uma chance real de que a
-    # ORDEM DE CAPTURA tenha saido errada (erro recorrente: a 1a foto
-    # tirada foi do produto, nao da caixa de verdade - a caixa acabou
-    # em outra posicao do lote). Em vez de so desistir, testa se a
-    # posicao 2 (que a gente chamaria de "capa") e na verdade a caixa.
-    # So dispara esse fallback quando a 1a tentativa falhou - nao
-    # adiciona nenhuma chamada extra quando a ordem ja esta certa.
     papeis_trocados = False
     capa_bytes_bruto_alternativo = None
     if not confiante:
@@ -1017,7 +964,7 @@ def processar_lote(lote):
             print("Ordem de captura invertida confirmada: a foto 2 e a caixa, a foto 1 e o produto - trocando os papeis")
             sku, marca, confiante = sku_c, marca_c, confiante_c
             caixa_bytes_original = capa_bytes_rotacionado
-            capa_bytes_bruto_alternativo = caixa_bytes_bruto  # a foto que era "caixa" (na verdade produto) vira a capa
+            capa_bytes_bruto_alternativo = caixa_bytes_bruto
             papeis_trocados = True
         else:
             print("Posicao 2 tambem nao e uma caixa legivel - segue normal pra revisao manual")
@@ -1031,9 +978,6 @@ def processar_lote(lote):
     if aprovado:
         pasta_lote = f"{DROPBOX_DEST_ROOT}/{identificador}"
     else:
-        # organiza por MOTIVO do problema, nao por data - assim da pra ir
-        # direto na causa (ex: "SEM_LOGO_NGK" agrupa todos os lotes que so
-        # faltam o logo dessa marca especifica)
         if not confiante and not logo_bytes:
             motivo_pasta = "SKU_ILEGIVEL_SEM_LOGO"
         elif not confiante:
@@ -1043,21 +987,11 @@ def processar_lote(lote):
             motivo_pasta = f"SEM_LOGO_{marca_pasta}"
         pasta_lote = f"{DROPBOX_SOURCE_PATH}/_REVISAR/{motivo_pasta}/{identificador}"
 
-    # pasta dos ORIGINAIS: sempre uma subpasta _ORIGINAIS dentro da propria
-    # pasta do lote (MIDIA_FINAL/<SKU>/_ORIGINAIS ou _REVISAR/.../_ORIGINAIS)
-    # - um unico padrao, tudo do mesmo lote junto num so lugar
     pasta_originais = f"{pasta_lote}/_ORIGINAIS"
 
-    # --- Edita e sobe TODAS as fotos, aprovado ou nao ---
     fotos_com_problema = []
 
     def subir_foto_produto(nome_arquivo, bytes_editados):
-        """Se o lote foi aprovado, checa se tem mao/dedo na foto. Se
-        tiver, TENTA remover automaticamente via IA (inpainting) antes
-        de desistir - so cai em _VERIFICAR se a remocao falhar ou o
-        resultado ainda mostrar problema. Isso evita que praticamente
-        toda foto (peca segurada na mao na hora de fotografar) va
-        parar em revisao manual."""
         if aprovado:
             regiao_mao = detectar_regiao_mao(bytes_editados)
             if regiao_mao:
@@ -1066,7 +1000,6 @@ def processar_lote(lote):
                     print(f"{nome_arquivo}: mao detectada e removida automaticamente")
                 except Exception as e:
                     print(f"{nome_arquivo}: remocao automatica da mao falhou: {repr(e)}")
-                # confere se realmente sumiu (ou se o resultado ficou ruim)
                 ok, motivo = verificar_qualidade_foto(bytes_editados)
                 if not ok:
                     fotos_com_problema.append((nome_arquivo, motivo))
@@ -1074,15 +1007,10 @@ def processar_lote(lote):
                     return
         dbx_subir(f"{pasta_lote}/{nome_arquivo}", bytes_editados)
 
-    icone_hexagon_bytes = _buscar_logo_em(DROPBOX_LOGOS_HEXAGON_PATH, "HEXAGON LOGO")  # usado so no banner final da galeria, nao mais no selo
+    icone_hexagon_bytes = _buscar_logo_em(DROPBOX_LOGOS_HEXAGON_PATH, "HEXAGON LOGO")
     cor_selo = COR_ELRING if (marca and marca.strip().upper() == "ELRING") else COR_HEXAGON
 
-    # se os papeis foram trocados (ordem de captura invertida), usa a
-    # foto que originalmente seria a "caixa" (na verdade o produto) como
-    # capa - senao, baixa a foto normal da posicao 2
     bruto = capa_bytes_bruto_alternativo if papeis_trocados else dbx_baixar(capa_arq["path_lower"])
-    # NAO aplica mais os 2 selos (Confianca/Garantia) na Capa - eles vao
-    # ser usados na futura foto dedicada de montadoras/universal.
     subir_foto_produto(
         f"{identificador}_Capa.jpg",
         editar_produto(bruto, logo_bytes, aplicar_selos=False, cor_selo=cor_selo),
@@ -1098,8 +1026,6 @@ def processar_lote(lote):
         editar_produto(caixa_bytes_original, logo_bytes),
     )
 
-    # --- Banners fixos obrigatorios (penultima e ultima foto), em TODA
-    # marca que vendemos, exceto ELRING (que tem tratamento proprio) ---
     if aprovado and marca and marca.strip().upper() != "ELRING":
         entrega_bytes = _buscar_logo_em(DROPBOX_LOGOS_HEXAGON_PATH, "ENTREGA HEXAGON")
         logo_hex_bytes = icone_hexagon_bytes
@@ -1118,8 +1044,9 @@ def processar_lote(lote):
 
     video_bytes = dbx_baixar(video["path_lower"])
     dbx_subir(f"{pasta_lote}/{identificador}.mp4", video_bytes)
+    if aprovado:
+        enviar_video_para_drive(identificador, video_bytes)
 
-    # --- Move TODOS os originais (inclusive a caixa) pra fora da entrada ---
     mover_lote_com_tolerancia(lote, pasta_originais)
 
     if not aprovado:
@@ -1137,6 +1064,12 @@ def processar_lote(lote):
         )
         print(f"Lote em _REVISAR ({pasta_lote}): {motivo}")
     else:
+        # SKU aprovado e publicado com sucesso -> registra na planilha
+        # (aba Staging) pra pesquisa de dados poder comecar. So chega
+        # aqui depois que TODA a midia ja subiu, entao uma falha aqui
+        # nunca compromete as fotos/video ja publicados.
+        registrar_no_staging(identificador, marca, pasta_lote)
+
         if fotos_com_problema:
             enviar_alerta(
                 "Robo de Midias - fotos com problema dentro de lote aprovado",
@@ -1162,8 +1095,6 @@ def main():
 
     for lote in lotes:
         if len(lote) < 3:
-            # video "orfao" (sem caixa/capa por perto) - nao da pra
-            # processar, so joga pra revisao manual sem tentar indexar
             nomes = [a["name"] for a in lote]
             timestamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%d_%H%M%S")
             pasta_revisar = f"{DROPBOX_SOURCE_PATH}/_REVISAR/LOTE_INCOMPLETO/LOTE_{timestamp}"
