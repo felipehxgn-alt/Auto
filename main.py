@@ -381,7 +381,12 @@ def identificar_sku_marca(imagem_bytes, tentativa=1):
                     },
                     {
                         "type": "image_url",
-                        "image_url": {"url": f"data:image/jpeg;base64,{img_b64}"},
+                        # detail=high forca a IA a analisar a foto em resolucao
+                        # completa (varios tiles), em vez do padrao "auto" que
+                        # costuma reduzir a imagem antes de olhar - critico
+                        # aqui porque o SKU/marca geralmente ocupa uma fracao
+                        # pequena da foto inteira.
+                        "image_url": {"url": f"data:image/jpeg;base64,{img_b64}", "detail": "high"},
                     },
                 ],
             }
