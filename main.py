@@ -1005,13 +1005,16 @@ def processar_lote(lote):
     angulos = lote[2:-1]
     video = lote[-1]
 
+    print(f"Lote com {len(lote)} arquivos: posicao 1 (caixa)='{caixa_arq['name']}' | posicao 2 (capa)='{capa_arq['name']}' | angulos={[a['name'] for a in angulos]} | video='{video['name']}'")
+
     caixa_bytes_bruto = dbx_baixar(caixa_arq["path_lower"])
+    print(f"Foto da caixa baixada: '{caixa_arq['name']}' ({len(caixa_bytes_bruto)} bytes)")
     sku, marca, confiante, caixa_bytes_original = ler_caixa_com_retentativas(caixa_bytes_bruto, 1)
 
     papeis_trocados = False
     capa_bytes_bruto_alternativo = None
     if not confiante:
-        print("Leitura da posicao 1 (caixa) sem confianca - testando se a posicao 2 (capa) e a caixa de verdade")
+        print(f"Leitura da posicao 1 (caixa='{caixa_arq['name']}') sem confianca - testando se a posicao 2 (capa='{capa_arq['name']}') e a caixa de verdade")
         capa_bytes_bruto = dbx_baixar(capa_arq["path_lower"])
         sku_c, marca_c, confiante_c, capa_bytes_rotacionado = ler_caixa_com_retentativas(capa_bytes_bruto, 3)
         if confiante_c:
