@@ -1,0 +1,9 @@
+requests
+Pillow
+rembg
+onnxruntime
+openai
+gspread
+google-auth
+google-auth-oauthlib
+google-api-python-client
