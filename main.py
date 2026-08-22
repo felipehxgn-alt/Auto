@@ -1,6 +1,3 @@
-
-
-
 Main · PY
 """
 Robo de Midias - Automacao de fotos/videos de produtos (ELRING/Hexagon e outras marcas)
