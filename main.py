@@ -322,7 +322,14 @@ def identificar_sku_marca(imagem_bytes, tentativa=1):
     chamada e qual, sem precisar adivinhar pela ordem das linhas."""
     img_b64 = base64.b64encode(imagem_bytes).decode("utf-8")
     payload = {
-        "model": "gpt-4o-mini",
+        # gpt-4o (nao o -mini) especificamente aqui: essa e a chamada mais
+        # sensivel a qualidade de OCR do robo todo - etiquetas em plastico
+        # amassado, com marca d'agua ou reflexo, derrubavam a leitura no
+        # modelo mini mesmo com boa resolucao (detail=high) e texto
+        # legivel a olho nu. As outras chamadas de IA do robo (deteccao de
+        # mao, checagem de qualidade) continuam no -mini, que e suficiente
+        # pra elas e mais barato/rapido.
+        "model": "gpt-4o",
         "messages": [
             {
                 "role": "user",
