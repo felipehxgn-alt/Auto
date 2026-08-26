@@ -68,6 +68,8 @@ import json
 import base64
 import smtplib
 import datetime
+import subprocess
+import tempfile
 from email.mime.text import MIMEText
 
 import requests
@@ -742,6 +744,36 @@ def editar_produto(bytes_brutos, logo_bytes, aplicar_selos=False, cor_selo=COR_H
 
 
 # ============================================================
+# VIDEO - REMOCAO DE AUDIO
+# ============================================================
+def remover_audio_video(video_bytes, extensao):
+    """Remove a faixa de audio do video (vira mudo), sem recodificar
+    o video (so remove o audio - copy stream, rapido e sem perda de
+    qualidade). Usa o ffmpeg ja instalado por padrao nos runners do
+    GitHub Actions. Se o ffmpeg falhar por qualquer motivo, retorna o
+    video original COM audio - nunca bloqueia o lote por causa disso."""
+    with tempfile.NamedTemporaryFile(suffix=extensao) as entrada, \
+         tempfile.NamedTemporaryFile(suffix=extensao) as saida:
+        entrada.write(video_bytes)
+        entrada.flush()
+        try:
+            subprocess.run(
+                ["ffmpeg", "-y", "-i", entrada.name, "-an", "-c:v", "copy", saida.name],
+                check=True,
+                capture_output=True,
+                timeout=120,
+            )
+            with open(saida.name, "rb") as f:
+                resultado = f.read()
+            if resultado:
+                return resultado
+            print("AVISO: ffmpeg gerou arquivo vazio ao remover audio - mantendo video original com audio")
+        except Exception as e:
+            print(f"AVISO: falha removendo audio do video (mantendo com audio): {repr(e)}")
+        return video_bytes
+
+
+# ============================================================
 # ALERTAS POR E-MAIL
 # ============================================================
 def enviar_alerta(assunto, corpo):
@@ -1100,6 +1132,7 @@ def processar_lote(lote):
             print(f"AVISO: banner 'HEXAGON LOGO' nao encontrado em {DROPBOX_LOGOS_HEXAGON_PATH}")
 
     video_bytes = dbx_baixar(video["path_lower"])
+    video_bytes = remover_audio_video(video_bytes, os.path.splitext(video["name"])[1] or ".mp4")
     dbx_subir(f"{pasta_lote}/{identificador}.mp4", video_bytes)
     if aprovado:
         enviar_video_para_drive(identificador, video_bytes)
