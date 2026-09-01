@@ -64,12 +64,14 @@ cadastrados):
 
 import os
 import io
+import re
 import json
 import base64
 import smtplib
 import datetime
 import subprocess
 import tempfile
+import unicodedata
 from email.mime.text import MIMEText
 
 import requests
@@ -152,7 +154,7 @@ ALERT_EMAIL_TO = os.environ.get("ALERT_EMAIL_TO", "felipehxgn@gmail.com")
 
 CANVAS_SIZE = 1200
 MARGEM_RATIO = 0.05
-LOGO_MAX_RATIO = 0.18  # caixa maxima (largura E altura) que o logo pode ocupar - nunca estica alem disso, seja qual for o formato do logo original
+LOGO_MAX_RATIO = 0.14  # caixa maxima (largura E altura) que o logo pode ocupar - nunca estica alem disso, seja qual for o formato do logo original (reduzido de 0.18 -> 0.14 em 01/09)
 LOGO_MARGEM_RATIO = 0.05
 LOTE_INCOMPLETO_MINUTOS = 10
 
@@ -262,11 +264,27 @@ def mover_lote_com_tolerancia(lote, pasta_destino):
         )
 
 
+def _normalizar_marca(texto):
+    """Deixa so letras e numeros maiusculos, removendo espacos,
+    underscores, hifens e acentos - assim 'Magneti Marelli',
+    'magneti_marelli' e 'MAGNETI-MARELLI' viram todos a mesma
+    chave de comparacao 'MAGNETIMARELLI'. Corrige o bug onde a marca
+    lida pela IA (com espaco) nunca batia com o nome do arquivo de
+    logo salvo com underscore."""
+    if not texto:
+        return ""
+    texto = texto.upper()
+    texto = unicodedata.normalize("NFKD", texto)
+    texto = "".join(c for c in texto if not unicodedata.combining(c))
+    return re.sub(r"[^A-Z0-9]", "", texto)
+
+
 def _buscar_logo_em(pasta, alvo):
+    alvo_normalizado = _normalizar_marca(alvo)
     arquivos = dbx_listar_pasta(pasta)
     for f in arquivos:
-        nome_sem_ext = os.path.splitext(f["name"])[0].strip().upper()
-        if nome_sem_ext == alvo:
+        nome_sem_ext = os.path.splitext(f["name"])[0]
+        if _normalizar_marca(nome_sem_ext) == alvo_normalizado:
             return dbx_baixar(f["path_lower"])
     return None
 
@@ -274,7 +292,7 @@ def _buscar_logo_em(pasta, alvo):
 def dbx_buscar_logo(marca):
     if not marca:
         return None
-    alvo = marca.strip().upper()
+    alvo = marca.strip()
     # pasta Hexagon primeiro (prioridade pra produtos da marca propria)
     logo = _buscar_logo_em(DROPBOX_LOGOS_HEXAGON_PATH, alvo)
     if logo:
