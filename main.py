@@ -493,20 +493,52 @@ def remover_fundo(imagem_bytes):
     return rembg_remove(imagem_bytes)
 
 
-def ler_caixa_com_retentativas(imagem_bytes, numero_tentativa_inicial):
-    sku, marca, confiante, rotacao = identificar_sku_marca(imagem_bytes, tentativa=numero_tentativa_inicial)
-    if rotacao:
-        print(f"IA detectou rotacao de {rotacao} graus, mas a correcao automatica esta desativada - foto mantida como veio")
-    if not confiante:
-        # a leitura da IA nao e 100% deterministica - antes de desistir dessa
-        # foto e testar outra posicao, tenta mais uma vez na MESMA imagem
-        print("Primeira leitura sem confianca - tentando novamente na mesma foto antes de trocar de posicao")
-        sku2, marca2, confiante2, rotacao2 = identificar_sku_marca(imagem_bytes, tentativa=numero_tentativa_inicial + 1)
-        if rotacao2:
-            print(f"IA detectou rotacao de {rotacao2} graus, mas a correcao automatica esta desativada - foto mantida como veio")
-        if confiante2:
-            sku, marca, confiante = sku2, marca2, confiante2
-    return sku, marca, confiante, imagem_bytes
+def identificar_caixa_entre_fotos(fotos):
+    """
+    fotos: lista de arquivos do Dropbox (SEM o video), na ordem em que
+    aparecem no lote. NAO assume mais que a caixa e a foto 1 (ou a foto
+    2, no fallback antigo) - a ordem real de captura nem sempre e
+    respeitada por quem tira a foto. O UNICO parametro fixo do lote
+    continua sendo o video, que sempre fecha o lote.
+
+    Estrategia (2 passadas, pra equilibrar custo de API x confianca):
+      1a passada: 1 tentativa de leitura em CADA foto, na ordem, com
+      saida antecipada assim que uma foto for lida com confianca (caso
+      comum: para na 1a ou 2a foto testada, sem gastar chamada com o
+      resto do lote).
+      2a passada (so roda se a 1a nao achou nenhuma foto confiante):
+      mais 1 tentativa em cada foto, pro caso da 1a leitura ter sido
+      uma falha pontual do modelo (o modelo nao e 100% deterministico).
+
+    Retorna (indice_caixa_ou_None, sku, marca, confiante, bytes_por_indice).
+    bytes_por_indice: dict {indice: bytes_originais_da_foto} - cada foto
+    e baixada do Dropbox UMA unica vez, mesmo passando pelas 2 passadas,
+    e reaproveitada depois pra montar a saida final (evita baixar a
+    mesma foto duas vezes).
+    """
+    bytes_por_indice = {}
+
+    def baixar(i):
+        if i not in bytes_por_indice:
+            bytes_por_indice[i] = dbx_baixar(fotos[i]["path_lower"])
+        return bytes_por_indice[i]
+
+    tentativa = 1
+    for passada in (1, 2):
+        for i, foto in enumerate(fotos):
+            bruto = baixar(i)
+            sku, marca, confiante, rotacao = identificar_sku_marca(bruto, tentativa=tentativa)
+            tentativa += 1
+            if rotacao:
+                print(f"IA detectou rotacao de {rotacao} graus na foto '{foto['name']}', mas a correcao automatica esta desativada")
+            if confiante:
+                print(f"Foto da caixa identificada: '{foto['name']}' (posicao {i + 1} de {len(fotos)} fotos, passada {passada})")
+                return i, sku, marca, True, bytes_por_indice
+        if passada == 1:
+            print(f"1a passada: nenhuma das {len(fotos)} fotos do lote foi lida com confianca - tentando mais uma vez em cada uma (2a passada)")
+
+    print(f"Nenhuma das {len(fotos)} fotos do lote foi identificada como caixa com confianca, mesmo apos 2 passadas")
+    return None, None, None, False, bytes_por_indice
 
 
 # ============================================================
@@ -1050,31 +1082,41 @@ def enviar_video_para_drive(sku, video_bytes):
 
 
 def processar_lote(lote):
-    caixa_arq = lote[0]
-    capa_arq = lote[1]
-    angulos = lote[2:-1]
-    video = lote[-1]
+    *fotos, video = lote  # UNICO parametro fixo do lote: o video sempre e o ultimo arquivo, fecha o lote
+    # as demais fotos (caixa, capa, angulos) NAO tem posicao fixa - quem
+    # tira a foto nem sempre respeita a ordem sugerida, entao o robo testa
+    # cada uma pra descobrir sozinho qual e a foto da caixa
 
-    print(f"Lote com {len(lote)} arquivos: posicao 1 (caixa)='{caixa_arq['name']}' | posicao 2 (capa)='{capa_arq['name']}' | angulos={[a['name'] for a in angulos]} | video='{video['name']}'")
+    print(f"Lote com {len(lote)} arquivos (video sempre por ultimo): fotos={[f['name'] for f in fotos]} | video='{video['name']}'")
 
-    caixa_bytes_bruto = dbx_baixar(caixa_arq["path_lower"])
-    print(f"Foto da caixa baixada: '{caixa_arq['name']}' ({len(caixa_bytes_bruto)} bytes)")
-    sku, marca, confiante, caixa_bytes_original = ler_caixa_com_retentativas(caixa_bytes_bruto, 1)
+    indice_caixa, sku, marca, confiante, bytes_por_indice = identificar_caixa_entre_fotos(fotos)
 
-    papeis_trocados = False
-    capa_bytes_bruto_alternativo = None
-    if not confiante:
-        print(f"Leitura da posicao 1 (caixa='{caixa_arq['name']}') sem confianca - testando se a posicao 2 (capa='{capa_arq['name']}') e a caixa de verdade")
-        capa_bytes_bruto = dbx_baixar(capa_arq["path_lower"])
-        sku_c, marca_c, confiante_c, capa_bytes_rotacionado = ler_caixa_com_retentativas(capa_bytes_bruto, 3)
-        if confiante_c:
-            print("Ordem de captura invertida confirmada: a foto 2 e a caixa, a foto 1 e o produto - trocando os papeis")
-            sku, marca, confiante = sku_c, marca_c, confiante_c
-            caixa_bytes_original = capa_bytes_rotacionado
-            capa_bytes_bruto_alternativo = caixa_bytes_bruto
-            papeis_trocados = True
-        else:
-            print("Posicao 2 tambem nao e uma caixa legivel - segue normal pra revisao manual")
+    if indice_caixa is not None:
+        caixa_arq = fotos[indice_caixa]
+        caixa_bytes_original = bytes_por_indice[indice_caixa]
+        indices_restantes = [j for j in range(len(fotos)) if j != indice_caixa]
+    else:
+        # nenhuma foto foi lida com confianca - usa a primeira so pra
+        # manter o fluxo funcionando (o lote vai pra revisao manual de
+        # qualquer forma, ja que confiante=False)
+        caixa_arq = fotos[0]
+        caixa_bytes_original = bytes_por_indice[0]
+        indices_restantes = list(range(1, len(fotos)))
+
+    if indices_restantes:
+        indice_capa = indices_restantes[0]
+        capa_arq = fotos[indice_capa]
+        indices_angulos = indices_restantes[1:]
+    else:
+        # lote com so 1 foto (a caixa) + video - nao deveria acontecer
+        # (lote minimo exige 3 arquivos: 1 foto + capa + video), protege
+        # so pra nunca quebrar por indice vazio
+        indice_capa = indice_caixa if indice_caixa is not None else 0
+        capa_arq = caixa_arq
+        indices_angulos = []
+
+    angulos = [fotos[j] for j in indices_angulos]
+    print(f"Identificado: caixa='{caixa_arq['name']}' | capa='{capa_arq['name']}' | angulos={[a['name'] for a in angulos]}")
 
     timestamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%d_%H%M%S")
     identificador = sku or f"LOTE_{timestamp}"
@@ -1117,14 +1159,14 @@ def processar_lote(lote):
     icone_hexagon_bytes = _buscar_logo_em(DROPBOX_LOGOS_HEXAGON_PATH, "HEXAGON LOGO")
     cor_selo = COR_ELRING if (marca and marca.strip().upper() == "ELRING") else COR_HEXAGON
 
-    bruto = capa_bytes_bruto_alternativo if papeis_trocados else dbx_baixar(capa_arq["path_lower"])
+    bruto = bytes_por_indice[indice_capa]
     subir_foto_produto(
         f"{identificador}_Capa.jpg",
         editar_produto(bruto, logo_bytes, aplicar_selos=False, cor_selo=cor_selo),
     )
 
-    for i, arq in enumerate(angulos, start=2):
-        bruto = dbx_baixar(arq["path_lower"])
+    for i, (arq, idx_original) in enumerate(zip(angulos, indices_angulos), start=2):
+        bruto = bytes_por_indice[idx_original]
         nome_final = f"{identificador}_{str(i).zfill(2)}.jpg"
         subir_foto_produto(nome_final, editar_produto(bruto, logo_bytes))
 
