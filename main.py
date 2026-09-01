@@ -245,6 +245,42 @@ def dbx_mover_um_arquivo(from_path, to_path):
     resp.raise_for_status()
 
 
+def dbx_criar_link_compartilhado(caminho_pasta):
+    """Cria (ou reaproveita, se ja existir) um link compartilhavel do
+    Dropbox pra pasta do lote, pra virar link clicavel na planilha.
+    Retorna a URL, ou None se falhar (nesse caso o chamador usa o
+    caminho em texto puro como reserva, nunca quebra o registro na
+    planilha por causa disso).
+
+    IMPORTANTE: isso exige que o app do Dropbox tenha a permissao
+    'sharing.write' habilitada (Dropbox App Console > Permissions). Se
+    o app so tiver acesso a arquivos (sem sharing), essa chamada falha
+    e cai no aviso abaixo - conferir isso se o link nao aparecer."""
+    resp = requests.post(
+        f"{DBX_API}/sharing/create_shared_link_with_settings",
+        headers=DBX_HEADERS_JSON,
+        json={"path": caminho_pasta},
+        timeout=30,
+    )
+    if resp.status_code == 200:
+        return resp.json().get("url")
+
+    # se o link ja existia de uma execucao anterior, a API retorna erro
+    # 'shared_link_already_exists' com o link dentro do proprio erro -
+    # nesse caso so reaproveita, nao e uma falha de verdade
+    try:
+        dados_erro = resp.json()
+        if dados_erro.get("error", {}).get(".tag") == "shared_link_already_exists":
+            metadata = dados_erro["error"]["shared_link_already_exists"].get("metadata", {})
+            if metadata.get("url"):
+                return metadata["url"]
+    except Exception:
+        pass
+
+    print(f"AVISO: falha ao criar link compartilhado do Dropbox pra '{caminho_pasta}': {resp.status_code} - {resp.text}")
+    return None
+
+
 def mover_lote_com_tolerancia(lote, pasta_destino):
     """Move cada arquivo original do lote pra pasta_destino, um de cada
     vez. Se um falhar, registra e continua com os outros - nenhum
@@ -1048,12 +1084,26 @@ def registrar_no_staging(sku, marca, pasta_lote):
     processamento do lote - se a planilha falhar por qualquer motivo
     (credencial, rede, etc.), so registra o erro e segue o robo
     normalmente; a midia ja foi publicada com sucesso de qualquer
-    forma."""
+    forma.
+
+    A coluna "Caminho Midia" recebe um link clicavel (formula
+    =HYPERLINK) que abre a pasta do lote direto no Dropbox, em vez do
+    caminho em texto puro. Se a criacao do link falhar por qualquer
+    motivo, cai de volta pro caminho em texto simples - nunca bloqueia
+    o registro por causa disso."""
     try:
+        link = dbx_criar_link_compartilhado(pasta_lote)
+        if link:
+            # aspas duplas dentro da formula precisam ser escapadas, caso
+            # o caminho tenha algum caractere estranho (raro, mas protege)
+            caminho_para_planilha = f'=HYPERLINK("{link}","Abrir pasta")'
+        else:
+            caminho_para_planilha = pasta_lote
+
         adicionar_ao_staging(
             sku=sku,
             marca=marca or "",
-            caminho_midia=pasta_lote,
+            caminho_midia=caminho_para_planilha,
             status=STATUS_AGUARDANDO_PESQUISA,
         )
     except Exception as e:
