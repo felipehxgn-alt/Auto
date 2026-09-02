@@ -154,7 +154,7 @@ ALERT_EMAIL_TO = os.environ.get("ALERT_EMAIL_TO", "felipehxgn@gmail.com")
 
 CANVAS_SIZE = 1200
 MARGEM_RATIO = 0.05
-LOGO_MAX_RATIO = 0.14  # caixa maxima (largura E altura) que o logo pode ocupar - nunca estica alem disso, seja qual for o formato do logo original (reduzido de 0.18 -> 0.14 em 01/09)
+LOGO_MAX_RATIO = 0.23  # caixa maxima (largura E altura) que o logo pode ocupar - nunca estica alem disso, seja qual for o formato do logo original (reduzido de 0.18 -> 0.14 em 01/09)
 LOGO_MARGEM_RATIO = 0.05
 LOTE_INCOMPLETO_MINUTOS = 10
 
