@@ -1141,6 +1141,15 @@ def processar_lote(lote):
 
     indice_caixa, sku, marca, confiante, bytes_por_indice = identificar_caixa_entre_fotos(fotos)
 
+    def obter_bytes_da_foto(indice):
+        """A varredura em identificar_caixa_entre_fotos para assim que acha
+        a caixa (pra economizar chamada de IA), entao nem toda foto do
+        lote fica baixada nesse ponto - baixa sob demanda as que
+        faltarem, em vez de assumir que o cache ja tem tudo."""
+        if indice not in bytes_por_indice:
+            bytes_por_indice[indice] = dbx_baixar(fotos[indice]["path_lower"])
+        return bytes_por_indice[indice]
+
     if indice_caixa is not None:
         caixa_arq = fotos[indice_caixa]
         caixa_bytes_original = bytes_por_indice[indice_caixa]
@@ -1209,14 +1218,14 @@ def processar_lote(lote):
     icone_hexagon_bytes = _buscar_logo_em(DROPBOX_LOGOS_HEXAGON_PATH, "HEXAGON LOGO")
     cor_selo = COR_ELRING if (marca and marca.strip().upper() == "ELRING") else COR_HEXAGON
 
-    bruto = bytes_por_indice[indice_capa]
+    bruto = obter_bytes_da_foto(indice_capa)
     subir_foto_produto(
         f"{identificador}_Capa.jpg",
         editar_produto(bruto, logo_bytes, aplicar_selos=False, cor_selo=cor_selo),
     )
 
     for i, (arq, idx_original) in enumerate(zip(angulos, indices_angulos), start=2):
-        bruto = bytes_por_indice[idx_original]
+        bruto = obter_bytes_da_foto(idx_original)
         nome_final = f"{identificador}_{str(i).zfill(2)}.jpg"
         subir_foto_produto(nome_final, editar_produto(bruto, logo_bytes))
 
