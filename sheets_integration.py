@@ -1,5 +1,6 @@
 """
 sheets_integration.py
+
 Integração Fase 1 + Fase 2 (planilha <-> robô de mídias).
 
 Responsável por:
@@ -50,6 +51,31 @@ STAGING_COLS = [
     "Caminho Mídia (pasta do SKU)",
     "Data Adicionado",
     "Status",
+]
+
+# Colunas da aba Principal, nessa ordem exata (cabeçalho na linha 3 também,
+# mesmo padrão da Staging - confirmado direto na planilha real)
+PRINCIPAL_COLS = [
+    "Status Anúncio (OK/Pendente)",
+    "SKU",
+    "Marca (peça)",
+    "Montadora(s) Compatível(is) — resumo",
+    "Categoria",
+    "EAN/GTIN",
+    "Nacional/Importado",
+    "Nome do Produto (base)",
+    "Código OEM",
+    "Palavras-chave",
+    "Largura (cm)",
+    "Altura (cm)",
+    "Profundidade (cm)",
+    "Peso Físico — embalagem+produto (kg)",
+    "Estoque",
+    "Preço (R$)",
+    "Garantia",
+    "Fotos (caminho pasta SKU)",
+    "Descrição Base",
+    "Informações Extras",
 ]
 
 STAGING_HEADER_ROW = 3
@@ -157,10 +183,32 @@ def adicionar_ao_staging(
     print(f"[Staging] SKU {sku} adicionado com Status='{status}'.")
 
 
+def _montar_descricao_base(veiculos: str, motores: str, ano: str) -> str:
+    """Junta Veículos/Motor(es)/Ano num texto legível só - usado pra não
+    perder essa informação na hora de promover pra Principal (ver
+    comentário em promover_linhas_completas)."""
+    partes = []
+    if veiculos:
+        partes.append(f"Veículos: {veiculos}")
+    if motores:
+        partes.append(f"Motor(es): {motores}")
+    if ano:
+        partes.append(f"Ano: {ano}")
+    return " | ".join(partes)
+
+
 def promover_linhas_completas() -> int:
     """
     Varre o Staging: toda linha com Status == 'Completo' é copiada pra Principal
     (Status = 'Pendente') e removida do Staging.
+
+    IMPORTANTE (corrigido): a Montadora e o resumo de Veículos/Motor/Ano
+    pesquisados NÃO são mais perdidos nessa promoção - antes só SKU/Marca
+    eram copiados. Agora Montadora vai pra coluna própria da Principal, e
+    Veículos/Motor/Ano (que não tem coluna dedicada na Principal) entram
+    juntos, de forma legível, na coluna "Descrição Base" - fica disponível
+    pra quem for escrever o anúncio depois, e também pro script de vídeo
+    legendado usar.
 
     Retorna o número de linhas promovidas.
     """
@@ -179,6 +227,10 @@ def promover_linhas_completas() -> int:
     idx_sku = STAGING_COLS.index("SKU")
     idx_marca = STAGING_COLS.index("Marca (peça)")
     idx_montadora = STAGING_COLS.index("Montadora")
+    idx_veiculos = STAGING_COLS.index("Veículos Compatíveis")
+    idx_motores = STAGING_COLS.index("Motor(es)")
+    idx_ano = STAGING_COLS.index("Ano")
+    idx_caminho = STAGING_COLS.index("Caminho Mídia (pasta do SKU)")
 
     promovidas = 0
     # percorre de baixo pra cima pra poder deletar linhas do Staging sem
@@ -193,16 +245,25 @@ def promover_linhas_completas() -> int:
         if status_atual == STATUS_COMPLETO and sku:
             marca = linha[idx_marca] if len(linha) > idx_marca else ""
             montadora = linha[idx_montadora] if len(linha) > idx_montadora else ""
+            veiculos = linha[idx_veiculos] if len(linha) > idx_veiculos else ""
+            motores = linha[idx_motores] if len(linha) > idx_motores else ""
+            ano = linha[idx_ano] if len(linha) > idx_ano else ""
+            caminho_midia = linha[idx_caminho] if len(linha) > idx_caminho else ""
 
-            # Monta a linha da aba Principal — Status entra como Pendente,
-            # o restante dos campos (título, medidas, preço etc.) continua
-            # em branco pra ser preenchido na pesquisa, exceto o que já veio
-            # pronto do Staging (SKU, Marca).
-            nova_linha_principal = [
-                STATUS_PENDENTE_PRINCIPAL,  # Status Anúncio (OK/Pendente)
-                sku,                         # SKU
-                marca,                       # Marca
-            ]
+            descricao_base = _montar_descricao_base(veiculos, motores, ano)
+
+            # Monta a linha da aba Principal seguindo a ordem real de
+            # PRINCIPAL_COLS. Campos que só são preenchidos na etapa de
+            # redação do anúncio (Categoria, EAN, preço, etc.) ficam em
+            # branco de propósito.
+            nova_linha_principal = [""] * len(PRINCIPAL_COLS)
+            nova_linha_principal[PRINCIPAL_COLS.index("Status Anúncio (OK/Pendente)")] = STATUS_PENDENTE_PRINCIPAL
+            nova_linha_principal[PRINCIPAL_COLS.index("SKU")] = sku
+            nova_linha_principal[PRINCIPAL_COLS.index("Marca (peça)")] = marca
+            nova_linha_principal[PRINCIPAL_COLS.index("Montadora(s) Compatível(is) — resumo")] = montadora
+            nova_linha_principal[PRINCIPAL_COLS.index("Fotos (caminho pasta SKU)")] = caminho_midia
+            nova_linha_principal[PRINCIPAL_COLS.index("Descrição Base")] = descricao_base
+
             principal.append_row(nova_linha_principal, value_input_option="USER_ENTERED")
 
             # remove a linha correspondente do Staging (linha real na planilha)
@@ -210,7 +271,7 @@ def promover_linhas_completas() -> int:
             staging.delete_rows(linha_real_na_planilha)
 
             promovidas += 1
-            print(f"[Promoção] SKU {sku} movido de Staging pra Principal (Status=Pendente).")
+            print(f"[Promoção] SKU {sku} movido de Staging pra Principal (Status=Pendente, Montadora='{montadora}' preservada).")
 
     return promovidas
 
