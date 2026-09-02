@@ -118,7 +118,7 @@ SCOPES = [
 ]
 
 MODELO_TEXTO = "gpt-4o-mini"
-MODELO_BUSCA_WEB = "gpt-4o-search-preview"  # modelo da OpenAI com busca web real embutida
+MODELO_BUSCA_WEB = "gpt-5-search-api"  # modelo da OpenAI com busca web real embutida (gpt-4o-search-preview foi descontinuado)
 
 
 # ============================================================
@@ -200,12 +200,12 @@ def ler_linhas_pendentes(aba_staging):
 
 def escrever_resultado(aba_staging, numero_linha, montadora, veiculos, motor, ano, status, fonte):
     intervalo = f"{COL_LETRA['Montadora']}{numero_linha}:{COL_LETRA['Fonte da Pesquisa']}{numero_linha}"
-    aba_staging.update(intervalo, [[montadora, veiculos, motor, ano, status, fonte]], value_input_option="USER_ENTERED")
+    aba_staging.update(range_name=intervalo, values=[[montadora, veiculos, motor, ano, status, fonte]], value_input_option="USER_ENTERED")
 
 
 def marcar_verificar_manual(aba_staging, numero_linha, motivo):
     intervalo = f"{COL_LETRA['Status']}{numero_linha}:{COL_LETRA['Fonte da Pesquisa']}{numero_linha}"
-    aba_staging.update(intervalo, [[STATUS_VERIFICAR_MANUAL, motivo]], value_input_option="USER_ENTERED")
+    aba_staging.update(range_name=intervalo, values=[[STATUS_VERIFICAR_MANUAL, motivo]], value_input_option="USER_ENTERED")
 
 
 # ============================================================
