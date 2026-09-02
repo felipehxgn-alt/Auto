@@ -1,5 +1,5 @@
 """
-Robo de Midias - Automacao de fotos/videos de produtos (ELRING/Hexagon e outras marcas)
+Robo de Midias - Automacao de fotos/videos de produtos (multicanal, varias marcas)
 Armazenamento: 100% Dropbox (entrada, saida e logos).
 
 ORDEM DE CAPTURA (no celular/camera):
@@ -154,7 +154,7 @@ ALERT_EMAIL_TO = os.environ.get("ALERT_EMAIL_TO", "felipehxgn@gmail.com")
 
 CANVAS_SIZE = 1200
 MARGEM_RATIO = 0.05
-LOGO_MAX_RATIO = 0.23  # caixa maxima (largura E altura) que o logo pode ocupar - nunca estica alem disso, seja qual for o formato do logo original (reduzido de 0.18 -> 0.14 em 01/09)
+LOGO_MAX_RATIO = 0.14  # caixa maxima (largura E altura) que o logo pode ocupar - nunca estica alem disso, seja qual for o formato do logo original (reduzido de 0.18 -> 0.14 em 01/09)
 LOGO_MARGEM_RATIO = 0.05
 LOTE_INCOMPLETO_MINUTOS = 10
 
@@ -164,6 +164,35 @@ VIDEO_EXTS = (".mp4", ".mov")
 # ============================================================
 # DROPBOX
 # ============================================================
+# Padrao de nome que o WhatsApp usa ao exportar foto/video, com a data e
+# hora REAL de captura embutida no nome (ex: "WhatsApp Image 2026-09-02
+# at 08.19.04.jpeg", "WhatsApp Video 2026-09-02 at 08.19.49.mp4").
+_PADRAO_TIMESTAMP_WHATSAPP = re.compile(
+    r"(\d{4}-\d{2}-\d{2}) at (\d{2})\.(\d{2})\.(\d{2})"
+)
+
+
+def _timestamp_de_captura(nome_arquivo, server_modified):
+    """Tenta extrair a hora REAL de captura do nome do arquivo (padrao do
+    WhatsApp). Isso e mais confiavel do que server_modified pra decidir a
+    ordem/agrupamento dos lotes, porque o Dropbox so registra
+    server_modified na hora que o arquivo CHEGA no Dropbox - se o
+    WhatsApp sincronizar tudo em rajada (varias fotos/videos de uma vez,
+    em vez de um por um assim que sao tirados), a ordem de chegada pode
+    nao bater com a ordem real de captura, e ai um video pode 'chegar'
+    fora de ordem em relacao as fotos do produto seguinte - misturando
+    lotes que deveriam ser separados.
+
+    Se o nome nao seguir o padrao do WhatsApp (foto de outra origem,
+    renomeada, etc), cai de volta pro server_modified normal - nunca
+    quebra por falta do padrao."""
+    m = _PADRAO_TIMESTAMP_WHATSAPP.search(nome_arquivo)
+    if m:
+        data, hora, minuto, segundo = m.groups()
+        return f"{data}T{hora}:{minuto}:{segundo}"
+    return server_modified
+
+
 def dbx_listar_pasta(path):
     entradas = []
     resp = requests.post(
@@ -189,7 +218,9 @@ def dbx_listar_pasta(path):
         entradas.extend(dados.get("entries", []))
 
     arquivos = [e for e in entradas if e.get(".tag") == "file"]
-    arquivos.sort(key=lambda e: e.get("server_modified", e["name"]))
+    # ordena pela hora REAL de captura (extraida do nome, quando possivel)
+    # em vez da hora de chegada no Dropbox - ver _timestamp_de_captura
+    arquivos.sort(key=lambda e: _timestamp_de_captura(e["name"], e.get("server_modified", e["name"])))
     return arquivos
 
 
@@ -665,7 +696,6 @@ def _carregar_fonte(tamanho):
 
 
 COR_HEXAGON = (17, 85, 165, 255)
-COR_ELRING = (196, 30, 30, 255)
 
 
 def _desenhar_texto_curvo(canvas_rgba, texto, centro, raio, fonte, cor):
@@ -810,7 +840,7 @@ def aplicar_selo_garantia_real(canvas_rgba):
     return canvas_rgba
 
 
-def editar_produto(bytes_brutos, logo_bytes, aplicar_selos=False, cor_selo=COR_HEXAGON):
+def editar_produto(bytes_brutos, logo_bytes, aplicar_selos=False):
     try:
         sem_fundo = remover_fundo(bytes_brutos)
     except Exception as e:
@@ -820,12 +850,8 @@ def editar_produto(bytes_brutos, logo_bytes, aplicar_selos=False, cor_selo=COR_H
         sem_fundo = bytes_brutos
     canvas = compor_produto_em_canvas(sem_fundo, logo_bytes)
     if aplicar_selos:
-        if cor_selo == COR_ELRING:
-            canvas = aplicar_selo_original(canvas, cor_selo)
-            canvas = aplicar_selo_garantia(canvas, cor_selo)
-        else:
-            canvas = aplicar_selo_confianca_real(canvas)
-            canvas = aplicar_selo_garantia_real(canvas)
+        canvas = aplicar_selo_confianca_real(canvas)
+        canvas = aplicar_selo_garantia_real(canvas)
     return imagem_para_jpg_bytes(canvas)
 
 
@@ -1215,13 +1241,10 @@ def processar_lote(lote):
                     return
         dbx_subir(f"{pasta_lote}/{nome_arquivo}", bytes_editados)
 
-    icone_hexagon_bytes = _buscar_logo_em(DROPBOX_LOGOS_HEXAGON_PATH, "HEXAGON LOGO")
-    cor_selo = COR_ELRING if (marca and marca.strip().upper() == "ELRING") else COR_HEXAGON
-
     bruto = obter_bytes_da_foto(indice_capa)
     subir_foto_produto(
         f"{identificador}_Capa.jpg",
-        editar_produto(bruto, logo_bytes, aplicar_selos=False, cor_selo=cor_selo),
+        editar_produto(bruto, logo_bytes, aplicar_selos=False),
     )
 
     for i, (arq, idx_original) in enumerate(zip(angulos, indices_angulos), start=2):
@@ -1234,17 +1257,20 @@ def processar_lote(lote):
         editar_produto(caixa_bytes_original, logo_bytes),
     )
 
-    if aprovado and marca and marca.strip().upper() != "ELRING":
+    # Banners "Entrega Hexagon" e "Logo Hexagon" - restaurados em 02/09,
+    # sobem em toda pasta de produto aprovado, qualquer marca (projeto
+    # multicanal, sem tratamento especial pra nenhuma marca especifica).
+    if aprovado:
+        icone_hexagon_bytes = _buscar_logo_em(DROPBOX_LOGOS_HEXAGON_PATH, "HEXAGON LOGO")
         entrega_bytes = _buscar_logo_em(DROPBOX_LOGOS_HEXAGON_PATH, "ENTREGA HEXAGON")
-        logo_hex_bytes = icone_hexagon_bytes
         if entrega_bytes:
             img = Image.open(io.BytesIO(entrega_bytes)).convert("RGB")
             buf = io.BytesIO(); img.save(buf, format="JPEG", quality=95)
             dbx_subir(f"{pasta_lote}/{identificador}_ZZ_EntregaHexagon.jpg", buf.getvalue())
         else:
             print(f"AVISO: banner 'ENTREGA HEXAGON' nao encontrado em {DROPBOX_LOGOS_HEXAGON_PATH}")
-        if logo_hex_bytes:
-            img = Image.open(io.BytesIO(logo_hex_bytes)).convert("RGB")
+        if icone_hexagon_bytes:
+            img = Image.open(io.BytesIO(icone_hexagon_bytes)).convert("RGB")
             buf = io.BytesIO(); img.save(buf, format="JPEG", quality=95)
             dbx_subir(f"{pasta_lote}/{identificador}_ZZZ_LogoHexagon.jpg", buf.getvalue())
         else:
