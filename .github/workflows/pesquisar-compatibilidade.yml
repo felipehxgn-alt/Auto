@@ -1,0 +1,27 @@
+name: Pesquisar compatibilidade dos SKUs pendentes
+
+on:
+  workflow_dispatch:  # so roda quando voce clicar "Run workflow" no GitHub - sem cron automatico
+
+jobs:
+  pesquisar:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout do repositorio
+        uses: actions/checkout@v4
+
+      - name: Configurar Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Instalar dependencias
+        run: pip install -r requirements_pesquisa.txt
+
+      - name: Rodar pesquisa de compatibilidade
+        env:
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          PLANILHA_ANUNCIOS_ML_ID: ${{ secrets.PLANILHA_ANUNCIOS_ML_ID }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          DRIVE_CATALOGOS_FOLDER_ID: ${{ secrets.DRIVE_CATALOGOS_FOLDER_ID }}
+        run: python pesquisar_compatibilidade.py
