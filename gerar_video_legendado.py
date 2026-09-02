@@ -85,30 +85,24 @@ ABA_PRINCIPAL = "Principal"
 PRINCIPAL_HEADER_ROW = 3
 PRINCIPAL_FIRST_DATA_ROW = 4
 
-PRINCIPAL_COLS = [
-    "Status Anúncio (OK/Pendente)",
+# A posicao de cada coluna NAO e mais fixa aqui - e lida do cabecalho
+# real da planilha a cada execucao (ver _mapa_colunas_pelo_cabecalho),
+# porque a ordem/nome exato das colunas pode variar (acento, coluna
+# inserida no meio, etc) sem que ninguem precise lembrar de atualizar
+# este arquivo.
+COLUNAS_NECESSARIAS = [
     "SKU",
     "Marca (peça)",
     "Montadora(s) Compatível(is) — resumo",
-    "Categoria",
-    "EAN/GTIN",
-    "Nacional/Importado",
     "Nome do Produto (base)",
-    "Código OEM",
-    "Palavras-chave",
-    "Largura (cm)",
-    "Altura (cm)",
-    "Profundidade (cm)",
-    "Peso Físico — embalagem+produto (kg)",
-    "Estoque",
-    "Preço (R$)",
-    "Garantia",
-    "Fotos (caminho pasta SKU)",
     "Descrição Base",
-    "Informações Extras",
-    "Video Legendado",  # coluna nova - precisa existir na planilha (cabeçalho manual)
+    "Vídeo Legendado",
 ]
-COL_LETRA = {nome: chr(ord("A") + i) for i, nome in enumerate(PRINCIPAL_COLS)}
+
+
+def _mapa_colunas_pelo_cabecalho(cabecalho):
+    """{'Nome da Coluna': indice_zero_based}."""
+    return {nome.strip(): i for i, nome in enumerate(cabecalho) if nome.strip()}
 
 SCOPES_SHEETS = ["https://www.googleapis.com/auth/spreadsheets"]
 
@@ -196,17 +190,31 @@ def ler_skus_pendentes_de_legenda(aba_principal):
     if len(todas) <= PRINCIPAL_HEADER_ROW:
         return []
 
-    linhas_dados = todas[PRINCIPAL_HEADER_ROW:]
-    idx_sku = PRINCIPAL_COLS.index("SKU")
-    idx_marca = PRINCIPAL_COLS.index("Marca (peça)")
-    idx_montadora = PRINCIPAL_COLS.index("Montadora(s) Compatível(is) — resumo")
-    idx_nome_produto = PRINCIPAL_COLS.index("Nome do Produto (base)")
-    idx_descricao_base = PRINCIPAL_COLS.index("Descrição Base")
-    idx_video_legendado = PRINCIPAL_COLS.index("Video Legendado")
+    cabecalho = todas[PRINCIPAL_HEADER_ROW - 1]
+    colunas = _mapa_colunas_pelo_cabecalho(cabecalho)
 
+    faltando = [c for c in COLUNAS_NECESSARIAS if c not in colunas]
+    if faltando:
+        raise RuntimeError(
+            f"Coluna(s) esperada(s) não encontrada(s) no cabeçalho real da "
+            f"aba Principal (linha {PRINCIPAL_HEADER_ROW}): {faltando}. "
+            f"Confere se o nome está escrito EXATAMENTE igual (acentos, "
+            f"maiúsculas, parênteses)."
+        )
+
+    idx_sku = colunas["SKU"]
+    idx_marca = colunas["Marca (peça)"]
+    idx_montadora = colunas["Montadora(s) Compatível(is) — resumo"]
+    idx_nome_produto = colunas["Nome do Produto (base)"]
+    idx_descricao_base = colunas["Descrição Base"]
+    idx_video_legendado = colunas["Vídeo Legendado"]
+
+    largura_minima = max(colunas.values()) + 1
+
+    linhas_dados = todas[PRINCIPAL_HEADER_ROW:]
     pendentes = []
     for offset, linha in enumerate(linhas_dados):
-        linha_completa = linha + [""] * (len(PRINCIPAL_COLS) - len(linha))
+        linha_completa = linha + [""] * (largura_minima - len(linha))
         sku = linha_completa[idx_sku].strip()
         montadora = linha_completa[idx_montadora].strip()
         video_legendado = linha_completa[idx_video_legendado].strip()
@@ -215,6 +223,7 @@ def ler_skus_pendentes_de_legenda(aba_principal):
             numero_linha_real = PRINCIPAL_FIRST_DATA_ROW + offset
             pendentes.append({
                 "linha": numero_linha_real,
+                "coluna_video_legendado": idx_video_legendado + 1,  # gspread usa 1-indexed
                 "sku": sku,
                 "marca": linha_completa[idx_marca].strip(),
                 "montadora": montadora,
@@ -224,14 +233,14 @@ def ler_skus_pendentes_de_legenda(aba_principal):
     return pendentes
 
 
-def marcar_video_legendado(aba_principal, numero_linha):
-    aba_principal.update_acell(f"{COL_LETRA['Video Legendado']}{numero_linha}", "Sim")
+def marcar_video_legendado(aba_principal, numero_linha, numero_coluna):
+    aba_principal.update_cell(numero_linha, numero_coluna, "Sim")
 
 
-def marcar_erro(aba_principal, numero_linha, motivo):
+def marcar_erro(aba_principal, numero_linha, numero_coluna, motivo):
     # nao apaga nada que ja existia - so anota o erro na coluna de
     # controle, pra tentar de novo depois sem perder rastro
-    aba_principal.update_acell(f"{COL_LETRA['Video Legendado']}{numero_linha}", f"ERRO: {motivo}")
+    aba_principal.update_cell(numero_linha, numero_coluna, f"ERRO: {motivo}")
 
 
 # ============================================================
@@ -385,7 +394,7 @@ def processar_sku(aba_principal, item):
     except Exception as e:
         motivo = f"Nao consegui baixar o video em '{caminho_video}': {repr(e)}"
         print(f"  ERRO: {motivo}")
-        marcar_erro(aba_principal, item["linha"], motivo)
+        marcar_erro(aba_principal, item["linha"], item["coluna_video_legendado"], motivo)
         return
 
     try:
@@ -395,7 +404,7 @@ def processar_sku(aba_principal, item):
     except Exception as e:
         motivo = f"Falha gerando as legendas/renderizando o video: {repr(e)}"
         print(f"  ERRO: {motivo}")
-        marcar_erro(aba_principal, item["linha"], motivo)
+        marcar_erro(aba_principal, item["linha"], item["coluna_video_legendado"], motivo)
         return
 
     try:
@@ -403,10 +412,10 @@ def processar_sku(aba_principal, item):
     except Exception as e:
         motivo = f"Video legendado gerado, mas falhou ao subir pro Dropbox: {repr(e)}"
         print(f"  ERRO: {motivo}")
-        marcar_erro(aba_principal, item["linha"], motivo)
+        marcar_erro(aba_principal, item["linha"], item["coluna_video_legendado"], motivo)
         return
 
-    marcar_video_legendado(aba_principal, item["linha"])
+    marcar_video_legendado(aba_principal, item["linha"], item["coluna_video_legendado"])
     print(f"  OK - video legendado e sobrescrito em '{caminho_video}'.")
 
 
@@ -432,7 +441,7 @@ def main():
         except Exception as e:
             print(f"ERRO inesperado processando SKU '{item['sku']}': {repr(e)}")
             try:
-                marcar_erro(aba_principal, item["linha"], f"Erro tecnico inesperado: {repr(e)}")
+                marcar_erro(aba_principal, item["linha"], item["coluna_video_legendado"], f"Erro tecnico inesperado: {repr(e)}")
             except Exception:
                 pass
 
