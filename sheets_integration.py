@@ -53,30 +53,11 @@ STAGING_COLS = [
     "Status",
 ]
 
-# Colunas da aba Principal, nessa ordem exata (cabeçalho na linha 3 também,
-# mesmo padrão da Staging - confirmado direto na planilha real)
-PRINCIPAL_COLS = [
-    "Status Anúncio (OK/Pendente)",
-    "SKU",
-    "Marca (peça)",
-    "Montadora(s) Compatível(is) — resumo",
-    "Categoria",
-    "EAN/GTIN",
-    "Nacional/Importado",
-    "Nome do Produto (base)",
-    "Código OEM",
-    "Palavras-chave",
-    "Largura (cm)",
-    "Altura (cm)",
-    "Profundidade (cm)",
-    "Peso Físico — embalagem+produto (kg)",
-    "Estoque",
-    "Preço (R$)",
-    "Garantia",
-    "Fotos (caminho pasta SKU)",
-    "Descrição Base",
-    "Informações Extras",
-]
+# A aba Principal NAO tem mais uma lista de colunas fixa aqui - a posição
+# de cada campo é lida do cabeçalho real da planilha a cada execução (ver
+# _mapa_colunas_pelo_cabecalho), porque a ordem das colunas lá pode mudar
+# (você já inseriu "Fonte da Pesquisa" no meio, por exemplo) sem que
+# ninguém precise lembrar de atualizar este arquivo.
 
 STAGING_HEADER_ROW = 3
 STAGING_FIRST_DATA_ROW = 4
@@ -197,6 +178,14 @@ def _montar_descricao_base(veiculos: str, motores: str, ano: str) -> str:
     return " | ".join(partes)
 
 
+def _mapa_colunas_pelo_cabecalho(cabecalho):
+    """{'Nome da Coluna': indice_zero_based}. Le o cabecalho DE VERDADE da
+    planilha em vez de assumir uma ordem fixa no codigo - se alguem
+    inserir/mover uma coluna na planilha, isso continua funcionando
+    sozinho, sem precisar mexer no script."""
+    return {nome.strip(): i for i, nome in enumerate(cabecalho) if nome.strip()}
+
+
 def promover_linhas_completas() -> int:
     """
     Varre o Staging: toda linha com Status == 'Completo' é copiada pra Principal
@@ -209,6 +198,12 @@ def promover_linhas_completas() -> int:
     juntos, de forma legível, na coluna "Descrição Base" - fica disponível
     pra quem for escrever o anúncio depois, e também pro script de vídeo
     legendado usar.
+
+    IMPORTANTE (corrigido de novo): a posição das colunas na Principal
+    NÃO é mais assumida fixa no código - é lida do cabeçalho real da
+    planilha a cada execução. Se você inserir, mover ou renomear uma
+    coluna na Principal, isso continua funcionando sem precisar editar
+    esse arquivo.
 
     Retorna o número de linhas promovidas.
     """
@@ -232,6 +227,24 @@ def promover_linhas_completas() -> int:
     idx_ano = STAGING_COLS.index("Ano")
     idx_caminho = STAGING_COLS.index("Caminho Mídia (pasta do SKU)")
 
+    # cabeçalho real da Principal, lido agora - não assumido no código
+    cabecalho_principal = principal.row_values(STAGING_HEADER_ROW)
+    colunas_principal = _mapa_colunas_pelo_cabecalho(cabecalho_principal)
+
+    campos_esperados = [
+        "Status Anúncio (OK/Pendente)", "SKU", "Marca (peça)",
+        "Montadora(s) Compatível(is) — resumo", "Fotos (caminho pasta SKU)",
+        "Descrição Base",
+    ]
+    faltando = [c for c in campos_esperados if c not in colunas_principal]
+    if faltando:
+        raise RuntimeError(
+            f"Coluna(s) esperada(s) não encontrada(s) no cabeçalho real da "
+            f"aba Principal (linha {STAGING_HEADER_ROW}): {faltando}. "
+            f"Confere se o nome está escrito EXATAMENTE igual (acentos, "
+            f"maiúsculas, parênteses)."
+        )
+
     promovidas = 0
     # percorre de baixo pra cima pra poder deletar linhas do Staging sem
     # bagunçar os índices das linhas ainda não processadas
@@ -252,17 +265,18 @@ def promover_linhas_completas() -> int:
 
             descricao_base = _montar_descricao_base(veiculos, motores, ano)
 
-            # Monta a linha da aba Principal seguindo a ordem real de
-            # PRINCIPAL_COLS. Campos que só são preenchidos na etapa de
-            # redação do anúncio (Categoria, EAN, preço, etc.) ficam em
-            # branco de propósito.
-            nova_linha_principal = [""] * len(PRINCIPAL_COLS)
-            nova_linha_principal[PRINCIPAL_COLS.index("Status Anúncio (OK/Pendente)")] = STATUS_PENDENTE_PRINCIPAL
-            nova_linha_principal[PRINCIPAL_COLS.index("SKU")] = sku
-            nova_linha_principal[PRINCIPAL_COLS.index("Marca (peça)")] = marca
-            nova_linha_principal[PRINCIPAL_COLS.index("Montadora(s) Compatível(is) — resumo")] = montadora
-            nova_linha_principal[PRINCIPAL_COLS.index("Fotos (caminho pasta SKU)")] = caminho_midia
-            nova_linha_principal[PRINCIPAL_COLS.index("Descrição Base")] = descricao_base
+            # Monta a linha da aba Principal na largura REAL do cabeçalho
+            # (lido agora), preenchendo cada campo pela posição certa -
+            # nunca por uma ordem fixa assumida no código. Campos que só
+            # são preenchidos na etapa de redação do anúncio (Categoria,
+            # EAN, preço, etc.) ficam em branco de propósito.
+            nova_linha_principal = [""] * len(cabecalho_principal)
+            nova_linha_principal[colunas_principal["Status Anúncio (OK/Pendente)"]] = STATUS_PENDENTE_PRINCIPAL
+            nova_linha_principal[colunas_principal["SKU"]] = sku
+            nova_linha_principal[colunas_principal["Marca (peça)"]] = marca
+            nova_linha_principal[colunas_principal["Montadora(s) Compatível(is) — resumo"]] = montadora
+            nova_linha_principal[colunas_principal["Fotos (caminho pasta SKU)"]] = caminho_midia
+            nova_linha_principal[colunas_principal["Descrição Base"]] = descricao_base
 
             principal.append_row(nova_linha_principal, value_input_option="USER_ENTERED")
 
